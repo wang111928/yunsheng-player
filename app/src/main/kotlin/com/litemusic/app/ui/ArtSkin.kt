@@ -15,3 +15,29 @@ internal fun artSkinDrawable(themeKind: String): Int? = when (canonicalNmlThemeK
     else -> null
 }
 
+/** The startup artwork is intentionally separate from page backgrounds and player art. */
+internal enum class StartupArtSkin {
+    STARRY_NIGHT,
+    SUNRISE,
+    LANDSCAPE,
+    DREAM,
+    NONE,
+}
+
+internal fun startupArtSkin(themeKind: String): StartupArtSkin = when (canonicalNmlThemeKind(themeKind)) {
+    NmThemeKind.STARRY_NIGHT -> StartupArtSkin.STARRY_NIGHT
+    NmThemeKind.SUNRISE -> StartupArtSkin.SUNRISE
+    NmThemeKind.LANDSCAPE -> StartupArtSkin.LANDSCAPE
+    NmThemeKind.DREAM -> StartupArtSkin.DREAM
+    else -> StartupArtSkin.NONE
+}
+
+@DrawableRes
+internal fun startupSkinDrawable(themeKind: String): Int? = when (startupArtSkin(themeKind)) {
+    StartupArtSkin.STARRY_NIGHT -> R.drawable.startup_starry_night
+    StartupArtSkin.SUNRISE -> R.drawable.startup_sunrise
+    StartupArtSkin.LANDSCAPE -> R.drawable.startup_landscape
+    StartupArtSkin.DREAM -> R.drawable.startup_dream
+    StartupArtSkin.NONE -> null
+}
+

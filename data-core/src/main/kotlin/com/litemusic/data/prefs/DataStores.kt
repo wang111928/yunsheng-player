@@ -41,7 +41,13 @@ class SettingsStore(private val context: Context) {
         Quality.entries.firstOrNull { q -> q.name == it[Keys.QUALITY] } ?: Quality.EXHIGH
     }
     val autoDegrade: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.AUTO_DEGRADE] ?: true }
-    val theme: Flow<String> = context.settingsDataStore.data.map { it[Keys.THEME] ?: "light" }
+    val theme: Flow<String> = context.settingsDataStore.data.map {
+        (it[Keys.THEME] ?: "light").also { theme ->
+            // Migrate installations created before the startup mirror existed. The next cold
+            // start can then render the selected skin before asynchronous preferences arrive.
+            StartupThemePreferences.mirror(context, theme)
+        }
+    }
     val glassBlur: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.GLASS_BLUR] ?: true }
     val lock60Hz: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.LOCK_60HZ] ?: false }
     val minLocalSec: Flow<Int> = context.settingsDataStore.data.map { it[Keys.MIN_LOCAL_SEC] ?: 30 }
@@ -58,7 +64,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setQuality(q: Quality) = context.settingsDataStore.edit { it[Keys.QUALITY] = q.name }
     suspend fun setAutoDegrade(v: Boolean) = context.settingsDataStore.edit { it[Keys.AUTO_DEGRADE] = v }
-    suspend fun setTheme(v: String) = context.settingsDataStore.edit { it[Keys.THEME] = v }
+    suspend fun setTheme(v: String) {
+        context.settingsDataStore.edit { it[Keys.THEME] = v }
+        StartupThemePreferences.mirror(context, v)
+    }
     suspend fun setGlassBlur(v: Boolean) = context.settingsDataStore.edit { it[Keys.GLASS_BLUR] = v }
     suspend fun setLock60Hz(v: Boolean) = context.settingsDataStore.edit { it[Keys.LOCK_60HZ] = v }
     suspend fun setMinLocalSec(v: Int) = context.settingsDataStore.edit { it[Keys.MIN_LOCAL_SEC] = v }

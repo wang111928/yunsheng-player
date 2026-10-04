@@ -1,17 +1,17 @@
-# 网易音乐lite（网易云音乐 Lite）
+# 云声（netease-music-lite）
 
-一个面向 Android 的第三方网易云音乐客户端项目，包含完整的 Gradle 源码结构以及 Full arm64 测试安装包。
+云声是一个面向 Android 的第三方音乐客户端项目，包含完整的 Gradle 源码结构以及 Full arm64 测试安装包。
 
 > 本项目与网易公司及网易云音乐官方无隶属或背书关系。登录、曲库、播放地址等能力依赖第三方服务接口，接口变化可能影响使用。
 
 ## 下载
 
-- **Full arm64 APK（0.2.28）**：[GitHub Releases](https://github.com/wang111928/netease-music-lite/releases/latest)
+- **Full arm64 APK（云声 0.2.29）**：[GitHub Releases](https://github.com/wang111928/netease-music-lite/releases/latest)
 - 包名：`com.litemusic.app.full.debug`
 - 最低 Android 版本：Android 9（API 28）
 - ABI：`arm64-v8a`
-- APK 大小：19,086,275 字节（约 18.2 MiB / 19.1 MB）
-- SHA-256：`532c9ae68ba48bdda3549652340d7b3726f0f83cbf15d102253f3c4cd3f358d7`
+- APK 大小：23,903,061 字节（约 22.8 MiB / 23.90 MB）
+- SHA-256：`FAC75A7E2EEBDCB0FBA40CB671D1EE1EBE5BB4CDE6CDD02CCCCA82178D53A971`
 
 这是用于测试分发的 **debug 签名** APK。Android 可能显示安装确认或安全提示。它不能直接覆盖由其他签名密钥签署的同包名应用。
 
@@ -27,7 +27,7 @@
 .\gradlew.bat :app:assembleFullDebug
 ```
 
-APK 输出在 `app/build/outputs/apk/full/debug/`。本项目的设备分发配置只打包 arm64-v8a；此仓库不提供 Min 或 x86 安装包。
+APK 输出在 `app/build/outputs/apk/full/debug/`。本项目的设备分发配置只打包 arm64-v8a；此仓库不提供 Min 或 x86 安装包。版本说明见 [`docs/releases/v0.2.29.md`](docs/releases/v0.2.29.md)。
 
 ## 许可与数据范围
 

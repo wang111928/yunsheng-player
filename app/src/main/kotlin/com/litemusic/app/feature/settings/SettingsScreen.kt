@@ -210,7 +210,7 @@ fun SettingsScreen(
 
                 item {
                     Text(
-                        "网易云音乐 Lite ${BuildConfig.VERSION_NAME}-${BuildConfig.FLAVOR_NAME}\n仅供个人学习研究，支持正版",
+                        "云声 ${BuildConfig.VERSION_NAME}-${BuildConfig.FLAVOR_NAME}\n仅供个人学习研究，支持正版",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),

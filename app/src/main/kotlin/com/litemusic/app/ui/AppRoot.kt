@@ -24,7 +24,6 @@ import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.content.ContextWrapper
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.MaterialTheme
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,7 +36,12 @@ import kotlinx.coroutines.flow.catch
 import org.koin.compose.koinInject
 
 @Composable
-fun AppRoot(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit = {}) {
+fun AppRoot(
+    playerEntry: Boolean? = null,
+    onPlayerEntryConsumed: () -> Unit = {},
+    startupTheme: String = "light",
+    showStartupOnCreate: Boolean = true,
+) {
     val settings: SettingsStore = koinInject()
     val themeFlow = remember(settings) { settings.theme.catch { emit("light") } }
     val theme by themeFlow.collectAsStateWithLifecycle(initialValue = "")
@@ -46,34 +50,36 @@ fun AppRoot(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit = {}
         auth.session.map<AuthStore.Session, AuthStore.Session?> { it }.catch { emit(AuthStore.Session()) }
     }
     val session by sessionFlow.collectAsStateWithLifecycle(initialValue = null)
+    val activeSession: AuthStore.Session? = session
 
-    // Wait for persisted settings before the first app page. This prevents a light flash when an
-    // art skin (or a dark skin) was selected on the previous launch.
-    if (theme.isBlank() || session == null) {
-        Box(Modifier.fillMaxSize().background(Color(0xFF101923)))
-        return
+    // Settings are asynchronous, but the synchronous mirror supplies the prior theme for this
+    // first frame. This also covers the unauthenticated screen while the session is loading.
+    val displayedTheme = theme.ifBlank { startupTheme }
+    val contentReady = theme.isNotBlank() && session != null
+    // Keep the overlay out of normal Activity restoration and task returns. A cold start fades
+    // away only after its artwork has been drawn and both persisted flows are ready.
+    var showStartupSkin by remember(showStartupOnCreate) {
+        mutableStateOf(showStartupOnCreate)
     }
-    val activeSession = session ?: return
-    // Kept outside the theme key: changing a skin must not recreate the navigation graph or
-    // replay the cold-start overlay while the user is already browsing a page.
-    var showStartupSkin by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        withFrameNanos { }
-        showStartupSkin = false
+    LaunchedEffect(contentReady) {
+        if (contentReady && showStartupSkin) {
+            withFrameNanos { }
+            showStartupSkin = false
+        }
     }
 
-    NmTheme(themeKind = theme) {
+    NmTheme(themeKind = displayedTheme) {
         Box(Modifier.fillMaxSize()) {
-            if (activeSession.loggedIn) {
-                MainNavHost(playerEntry, onPlayerEntryConsumed)
-            } else {
-                LoginScreen()
+            when {
+                activeSession?.loggedIn == true -> MainNavHost(playerEntry, onPlayerEntryConsumed)
+                activeSession != null -> LoginScreen()
+                else -> Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
             }
             AnimatedVisibility(
                 visible = showStartupSkin,
                 exit = fadeOut(animationSpec = tween(160)),
             ) {
-                StartupSkin(theme)
+                StartupSkin(displayedTheme)
             }
         }
     }
@@ -81,7 +87,7 @@ fun AppRoot(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit = {}
 
 @Composable
 private fun StartupSkin(theme: String) {
-    val art = artSkinDrawable(theme)
+    val art = startupSkinDrawable(theme)
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (art != null) {
             Image(

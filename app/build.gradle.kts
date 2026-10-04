@@ -8,8 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-val nmlVersionCode = 228
-val nmlVersionName = "0.2.28"
+val nmlVersionCode = 229
+val nmlVersionName = "0.2.29"
 // Explicitly opt in to the isolated authorization experiment. Stable installs keep their identity.
 val authHandoffExperiment = providers.gradleProperty("nmlAuthHandoffExperiment")
     .map { it.toBooleanStrict() }.getOrElse(false)
@@ -71,7 +71,7 @@ android {
             applicationIdSuffix = if (authHandoffExperiment) ".authprobe" else ".debug"
             if (authHandoffExperiment) {
                 versionNameSuffix = "-authprobe"
-                resValue("string", "app_name", "网易云轻量版 · 登录实验")
+                resValue("string", "app_name", "云声 · 登录实验")
             }
             // Test APKs are distributed to devices; keep the debuggable package small too.
             isMinifyEnabled = true
@@ -114,7 +114,7 @@ android.applicationVariants.all {
     outputs.all {
         val abi = (this as BaseVariantOutputImpl).getFilter(OutputFile.ABI) ?: "universal"
         val experimentSuffix = if (isAuthProbe) "-authprobe" else ""
-        outputFileName = "NeteaseMusicLite-$name-v$nmlVersionName-vc$nmlVersionCode-$abi$experimentSuffix.apk"
+        outputFileName = "Yunsheng-$name-v$nmlVersionName-vc$nmlVersionCode-$abi$experimentSuffix.apk"
     }
 }
 
