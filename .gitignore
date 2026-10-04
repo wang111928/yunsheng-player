@@ -1,0 +1,16 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+app/release/
+.tmp-web-chrome/
+*.log
+*.apk
+*.aab
+*.jks
+*.keystore

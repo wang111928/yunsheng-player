@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 网易云音乐音频/封面 CDN 会返回 http:// 明文地址（Android 9+ 默认禁止明文流量），
+     这里按域名放行网易系域名，其余保持默认（禁止明文）。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">126.net</domain>
+        <domain includeSubdomains="true">163.com</domain>
+        <domain includeSubdomains="true">127.net</domain>
+        <domain includeSubdomains="true">netease.com</domain>
+    </domain-config>
+</network-security-config>
