@@ -1,12 +1,12 @@
-# 云声（netease-music-lite）
+# 云声
 
-云声是一个面向 Android 的第三方音乐客户端项目，包含完整的 Gradle 源码结构以及 Full arm64 测试安装包。
+云声是一个面向 Android 的第三方音乐客户端项目，提供完整的 Gradle 源码结构、架构说明和 Full arm64 安装包。
 
 > 本项目与网易公司及网易云音乐官方无隶属或背书关系。登录、曲库、播放地址等能力依赖第三方服务接口，接口变化可能影响使用。
 
 ## 下载
 
-- **Full arm64 APK（云声 0.2.29）**：[GitHub Releases](https://github.com/wang111928/netease-music-lite/releases/latest)
+- **Full arm64 APK（云声 0.2.29）**：[GitHub Releases](https://github.com/wang111928/yunsheng-player/releases/latest)
 - 包名：`com.litemusic.app.full.debug`
 - 最低 Android 版本：Android 9（API 28）
 - ABI：`arm64-v8a`

@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "netease-music-lite"
+rootProject.name = "Yunsheng"
 
 include(":shared")
 include(":network-core")

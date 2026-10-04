@@ -1,4 +1,4 @@
-# 架构与源码说明
+# 云声 Android 客户端：架构与源码说明
 
 本文说明仓库中公开的源码布局、模块边界和构建入口。项目采用 Kotlin、Android Gradle Plugin、Jetpack Compose 与 Gradle 多模块结构。
 
