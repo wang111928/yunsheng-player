@@ -49,11 +49,11 @@ graph TD
 
 ## 设备包配置
 
-当前发布附件是 `0.2.28` Full Debug arm64-v8a APK：
+当前发布附件是 `0.2.38` Full Debug arm64-v8a APK：
 
 - application id：`com.litemusic.app.full.debug`
 - `minSdk`：28；`compileSdk` / `targetSdk`：36
-- 版本代码：228；版本名称：0.2.28
+- 版本代码：238；版本名称：0.2.38
 - ABI：arm64-v8a
 - 使用 Android debug 签名，仅供测试分发
 
@@ -64,6 +64,14 @@ graph TD
 ```
 
 要求 JDK 17 和 Android SDK 36。源码配置了 Min 风味，但本仓库只发布 Full arm64 安装包，不发布 Min 或 x86 APK。
+
+## 离线播放与版本更新
+
+`player-core/StreamAudioCache` 以进程内单例管理 Media3 音频缓存，使用 `NoOpCacheEvictor`，保存在 `noBackupFilesDir/stream-audio-v1`。`StreamCacheStorage` 在启动时尝试整目录迁移旧缓存，避免丢失已有索引；完整缓存状态用于离线选曲和灰显。部分缓存不保证能离线播放，音频缓存不等同于导出到公共音乐目录的下载文件。
+
+`app/feature/update` 提供 GitHub Release 筛选、公开 API / 页面回退、下载进度、完整性检查与安装包身份检查。网络客户端不携带音乐账号 Cookie。每次下载使用独立临时文件，并把取消绑定到完整响应体读取；失败或取消会清理本次文件。设置页面保持下载状态并防止重复下载。安装仅通过限定 `cache/updates/` 的 FileProvider 交给系统完成。
+
+更新检查以 versionCode 为准，过滤预发布及不匹配附件，禁止降级。安装前核对包名、版本码和签名；APK 命名约定为 `Yunsheng-full-v版本-vc版本号-arm64-v8a.apk`，Release 标签沿用 `v版本`。
 
 ## 许可说明
 

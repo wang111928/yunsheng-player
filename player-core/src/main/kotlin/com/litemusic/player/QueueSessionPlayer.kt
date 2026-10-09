@@ -34,6 +34,26 @@ internal class QueueSessionPlayer(
     override fun hasPreviousMediaItem(): Boolean = canGoPrevious()
     private fun canGoPrevious(): Boolean = navigator.hasPrevious()
 
+    /** MediaSession controls may pause while the next source is still resolving. */
+    override fun pause() {
+        stateMachine.onPaused()
+        super.pause()
+    }
+
+    override fun play() {
+        requestExternalPlay()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        if (playWhenReady) {
+            // A system Play may arrive while the service still has the previous media item
+            // installed and is resolving the newly selected one.  Mark the selected item's
+            // intent; PlaybackService will suppress the old item and apply this to the new URL.
+            requestExternalPlay()
+        } else stateMachine.onPaused()
+        if (!playWhenReady) super.setPlayWhenReady(false)
+    }
+
     override fun next() = move { navigator.next() }
     override fun seekToNext() = next()
     override fun seekToNextMediaItem() = next()
@@ -67,6 +87,27 @@ internal class QueueSessionPlayer(
         val sameItem = stateMachine.state.value.currentIndex == oldIndex
         if (sameItem) {
             getWrappedPlayer().seekTo(0)
+            getWrappedPlayer().play()
+        }
+    }
+
+    private fun requestExternalPlay() {
+        val current = stateMachine.state.value.current
+        if (current == null) return
+        if (shouldRestorePlaybackIntentFromExternalPlay(stateMachine.state.value.phase)) {
+            stateMachine.onLoading()
+        }
+        // When B is selected while A remains installed, forward nothing to ExoPlayer. The
+        // service resolves B from the state-machine intent and explicitly starts B's source.
+        val installedMatchesCurrent = canForwardExternalPlayToInstalledMedia(
+            getWrappedPlayer().currentMediaItem?.mediaId,
+            current,
+        )
+        if (installedMatchesCurrent) {
+            if (shouldRestartEndedInstalledMedia(getWrappedPlayer().playbackState, installedMatchesCurrent)) {
+                getWrappedPlayer().seekTo(0)
+                getWrappedPlayer().prepare()
+            }
             getWrappedPlayer().play()
         }
     }

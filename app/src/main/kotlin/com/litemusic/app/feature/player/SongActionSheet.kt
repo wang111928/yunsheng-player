@@ -31,13 +31,21 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.data.prefs.SettingsStore
+import com.litemusic.player.OfflinePlaybackAvailability
 import com.litemusic.player.PlaybackController
 import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.Song
@@ -58,10 +66,16 @@ enum class SongAction(val label: String) {
 
 internal fun songActionLabels(): List<String> = SongAction.entries.map { it.label }
 
-/** Adds a song immediately after the current item while retaining that queue's quality. */
-internal fun PlaybackController.enqueueNext(song: Song, quality: Quality = state.value.current?.quality ?: Quality.EXHIGH) {
+/** A next-track action must obey the same complete-cache rule as list playback. */
+internal fun canEnqueueNext(isOnline: Boolean, hasCompleteCache: Boolean): Boolean =
+    isOnline || hasCompleteCache
+
+internal fun offlineEnqueueNextMessage(): String = "离线状态下该歌曲尚未完整缓存，无法加入播放队列"
+
+/** Adds a previously validated queue item immediately after the current item. */
+internal fun PlaybackController.enqueueNext(item: com.litemusic.shared.player.QueueItem) {
     val currentIndex = state.value.currentIndex
-    enqueue(listOf(QueueBuilder().toQueueItem(song, quality)))
+    enqueue(listOf(item))
     val appendedIndex = state.value.queue.lastIndex
     val targetIndex = if (currentIndex < 0) 0 else (currentIndex + 1).coerceAtMost(appendedIndex)
     if (appendedIndex > targetIndex) move(appendedIndex, targetIndex)
@@ -79,6 +93,27 @@ fun SongActionSheet(
     onArtist: (() -> Unit)? = null,
     onUnavailable: (SongAction) -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val settings: SettingsStore = org.koin.compose.koinInject()
+    val network: NetworkStatusMonitor = org.koin.compose.koinInject()
+    val quality by settings.quality.collectAsState(initial = Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val queueBuilder = remember { QueueBuilder() }
+    val unavailableIds = rememberOfflineUnavailableIds(
+        songs = listOf(song),
+        isOnline = isOnline,
+        quality = quality,
+        cacheRevision = cacheRevision,
+        context = context,
+        queueBuilder = queueBuilder,
+    )
+    val canPlayNext = canEnqueueNext(
+        isOnline = isOnline,
+        hasCompleteCache = song.id !in unavailableIds.orEmpty() && unavailableIds != null,
+    )
+    val playNextDisabledReason = offlineUnavailableLabel(isOnline, unavailableIds, song.id)
+    LaunchedEffect(Unit) { network.refresh() }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(),
@@ -115,7 +150,7 @@ fun SongActionSheet(
             Spacer(Modifier.height(4.dp))
             SongAction.entries.forEach { action ->
                 val callback = when (action) {
-                    SongAction.PLAY_NEXT -> onPlayNext
+                    SongAction.PLAY_NEXT -> onPlayNext?.takeIf { canPlayNext }
                     SongAction.LIKE -> onLike
                     SongAction.COLLECT -> onQueue
                     SongAction.COMMENT -> onComment
@@ -124,6 +159,11 @@ fun SongActionSheet(
                 }
                 SongActionRow(
                     action = action,
+                    label = if (action == SongAction.PLAY_NEXT && !canPlayNext) {
+                        "${action.label} · ${playNextDisabledReason ?: "正在检查离线缓存"}"
+                    } else {
+                        action.label
+                    },
                     enabled = callback != null,
                     onClick = {
                         if (callback != null) {
@@ -142,6 +182,7 @@ fun SongActionSheet(
 @Composable
 private fun SongActionRow(
     action: SongAction,
+    label: String,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -154,7 +195,7 @@ private fun SongActionRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -165,7 +206,7 @@ private fun SongActionRow(
             modifier = Modifier.size(24.dp),
         )
         Text(
-            action.label,
+            label,
             style = MaterialTheme.typography.bodyLarge,
             color = contentColor,
             modifier = Modifier.padding(start = 18.dp),

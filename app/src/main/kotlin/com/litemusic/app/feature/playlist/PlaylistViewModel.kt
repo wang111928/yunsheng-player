@@ -35,10 +35,10 @@ class PlaylistViewModel(
         }
     }
 
-    fun load(id: Long) {
+    fun load(id: Long, force: Boolean = true) {
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            when (val r = repo.detail(id, force = true)) {
+            when (val r = repo.detail(id, force = force)) {
                 is AppResult.Success -> {
                     val uid = repo.currentUserId()
                     _state.update {
@@ -46,7 +46,12 @@ class PlaylistViewModel(
                     }
                     repo.loadLikedIds()
                 }
-                is AppResult.Failure -> _state.update { it.copy(loading = false, error = r.message) }
+                // Keep a rendered playlist visible on a failed refresh.  This matters after a
+                // cold offline restart: detail() already falls back to disk cache, but a stale
+                // result must never blank a page the user is currently reading.
+                is AppResult.Failure -> _state.update {
+                    it.copy(loading = false, error = if (it.playlist == null) r.message else null, toast = if (it.playlist == null) it.toast else r.message)
+                }
             }
         }
     }

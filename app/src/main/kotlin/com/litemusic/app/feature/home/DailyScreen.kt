@@ -55,27 +55,41 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import coil3.compose.AsyncImage
 import com.litemusic.app.data.AuthRepository
 import com.litemusic.app.data.HomeRepository
 import com.litemusic.app.data.PlaylistRepository
 import com.litemusic.app.feature.comment.CommentSheetController
+import com.litemusic.app.feature.player.offlinePlayableQueue
+import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.app.feature.player.offlineUnavailableLabel
+import com.litemusic.app.feature.player.rememberOfflineUnavailableIds
 import com.litemusic.app.feature.player.SongActionSheet
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
 import com.litemusic.app.feature.search.ArtistInfoDialog
 import com.litemusic.app.ui.Routes
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.NmSnackbarHost
+import com.litemusic.player.OfflinePlaybackAvailability
 import com.litemusic.player.PlaybackController
+import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.Artist
 import com.litemusic.shared.model.DailyStyleCategory
 import com.litemusic.shared.model.Song
 import com.litemusic.shared.util.AppResult
+import com.litemusic.shared.util.Quality
 import java.time.LocalDate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -107,6 +121,14 @@ fun DailyScreen(
     val playlistRepository: PlaylistRepository = koinInject()
     val homeRepository: HomeRepository = koinInject()
     val authRepository: AuthRepository = koinInject()
+    val context = LocalContext.current
+    val settings: SettingsStore = koinInject()
+    val network: NetworkStatusMonitor = koinInject()
+    val quality by settings.quality.collectAsState(initial = Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val queueBuilder = remember { QueueBuilder() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { network.refresh() }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var actionSong by remember { mutableStateOf<Song?>(null) }
@@ -250,7 +272,9 @@ fun DailyScreen(
         SongActionSheet(
             song = song,
             onDismiss = { actionSong = null },
-            onPlayNext = { player.enqueueNext(song) },
+            onPlayNext = {
+                player.enqueueNext(song) { message -> scope.launch { snackbar.showSnackbar(message) } }
+            },
             onLike = {
                 scope.launch {
                     val liked = song.id in playlistRepository.likedIds.value
@@ -269,6 +293,17 @@ fun DailyScreen(
     }
 
     val visibleSongs = if (styleMode) styleSongs else daily
+    val unavailableSongIds = rememberOfflineUnavailableIds(
+        songs = visibleSongs,
+        isOnline = isOnline,
+        quality = quality,
+        cacheRevision = cacheRevision,
+        context = context,
+        queueBuilder = queueBuilder,
+    )
+    val playableVisibleSongs = remember(visibleSongs, isOnline, unavailableSongIds) {
+        offlinePlayableQueue(visibleSongs, isOnline, unavailableSongIds)
+    }
     Box(Modifier.fillMaxSize().background(DailyInk)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -381,7 +416,9 @@ fun DailyScreen(
             item(key = "controls") {
                 Row(
                     modifier = Modifier.fillMaxWidth().height(66.dp).background(Color(0xFF191B22))
-                        .clickable(enabled = visibleSongs.isNotEmpty()) { player.playSongs(navController, visibleSongs, 0) }
+                        .clickable(enabled = playableVisibleSongs.isNotEmpty()) {
+                            player.playSongs(navController, playableVisibleSongs, 0)
+                        }
                         .padding(horizontal = 18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -526,9 +563,19 @@ fun DailyScreen(
                         DailyStatus("当前风格暂无推荐歌曲 · 点击重试", modifier = Modifier.clickable { loadStyleSongs() })
                     }
                     else -> itemsIndexed(styleSongs, key = { _, song -> "style-${song.id}" }) { index, song ->
+                        val queueIndex = offlineQueueStartIndex(
+                            songs = styleSongs,
+                            sourceIndex = index,
+                            isOnline = isOnline,
+                            unavailableIds = unavailableSongIds,
+                        )
                         DailySongRow(
                             song = song,
-                            onClick = { player.playSongs(navController, styleSongs, index) },
+                            enabled = queueIndex != null,
+                            disabledReason = offlineUnavailableLabel(isOnline, unavailableSongIds, song.id),
+                            onClick = {
+                                queueIndex?.let { player.playSongs(navController, playableVisibleSongs, it) }
+                            },
                             onMore = { actionSong = song },
                             onMv = song.mv.takeIf { it > 0L }?.let { mvId -> { navController.navigate(Routes.mv(mvId)) } },
                         )
@@ -552,9 +599,19 @@ fun DailyScreen(
                     DailyStatus(if (selectedDate == null) "今日推荐还未生成，稍后再来看看" else "该日期暂无推荐歌曲")
                 }
                 else -> itemsIndexed(daily, key = { _, song -> song.id }) { index, song ->
+                    val queueIndex = offlineQueueStartIndex(
+                        songs = daily,
+                        sourceIndex = index,
+                        isOnline = isOnline,
+                        unavailableIds = unavailableSongIds,
+                    )
                     DailySongRow(
                         song = song,
-                        onClick = { player.playSongs(navController, daily, index) },
+                        enabled = queueIndex != null,
+                        disabledReason = offlineUnavailableLabel(isOnline, unavailableSongIds, song.id),
+                        onClick = {
+                            queueIndex?.let { player.playSongs(navController, playableVisibleSongs, it) }
+                        },
                         onMore = { actionSong = song },
                         onMv = song.mv.takeIf { it > 0L }?.let { mvId ->
                             { navController.navigate(Routes.mv(mvId)) }
@@ -750,9 +807,18 @@ private fun DailyStyleFilters(
 }
 
 @Composable
-private fun DailySongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, onMv: (() -> Unit)?) {
+private fun DailySongRow(
+    song: Song,
+    enabled: Boolean,
+    disabledReason: String?,
+    onClick: () -> Unit,
+    onMore: () -> Unit,
+    onMv: (() -> Unit)?,
+) {
+    val contentColor = if (enabled) Color.White else DailyMuted
+    val accentColor = if (enabled) DailyRed else DailyMuted
     Row(
-        modifier = Modifier.fillMaxWidth().height(78.dp).clickable(onClick = onClick)
+        modifier = Modifier.fillMaxWidth().height(78.dp).clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -760,25 +826,34 @@ private fun DailySongRow(song: Song, onClick: () -> Unit, onMore: () -> Unit, on
             model = song.coverThumbUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
+            colorFilter = if (enabled) null else ColorFilter.colorMatrix(
+                ColorMatrix().apply { setToSaturation(0f) },
+            ),
             modifier = Modifier.size(54.dp).clip(RoundedCornerShape(7.dp))
                 .background(Color(0xFF2E3445)),
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(song.name, color = Color.White, style = MaterialTheme.typography.bodyLarge,
+            Text(song.name, color = contentColor, style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                disabledReason?.let { reason ->
+                    Text(reason, color = DailyMuted, style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(5.dp))
+                }
                 val vip = song.privilege?.fee == 1 || song.fee == 1
                 if (vip) {
-                    Text("VIP", color = Color(0xFFE8A678),
-                        modifier = Modifier.border(1.dp, Color(0xFFE8A678), RoundedCornerShape(3.dp))
+                    val vipColor = if (enabled) Color(0xFFE8A678) else DailyMuted
+                    Text("VIP", color = vipColor,
+                        modifier = Modifier.border(1.dp, vipColor, RoundedCornerShape(3.dp))
                             .padding(horizontal = 3.dp),
                         style = MaterialTheme.typography.labelSmall)
                     Spacer(Modifier.width(5.dp))
                 }
                 song.reason?.takeIf { it.isNotBlank() }?.let { reason ->
-                    Text(reason, color = DailyRed, style = MaterialTheme.typography.labelSmall,
+                    Text(reason, color = accentColor, style = MaterialTheme.typography.labelSmall,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.widthIn(max = 100.dp).clip(RoundedCornerShape(3.dp))
                             .background(Color(0xFF31262A)).padding(horizontal = 3.dp))

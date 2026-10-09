@@ -3,6 +3,8 @@ package com.litemusic.app.feature.player
 import com.litemusic.shared.player.PlayerUiState
 import com.litemusic.shared.player.QueueItem
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackQueuePresentationTest {
@@ -28,5 +30,12 @@ class PlaybackQueuePresentationTest {
         assertEquals(listOf(0, 1, 2), rows.map { it.index })
         assertEquals(listOf(false, true, false), rows.map { it.isCurrent })
         assertEquals(songs, rows.map { it.item })
+    }
+
+    @Test
+    fun onlyIncompleteRemoteSongsAreUnavailableOffline() {
+        assertTrue(isOfflineUnavailable(isOnline = false, hasCompleteCache = false))
+        assertFalse(isOfflineUnavailable(isOnline = false, hasCompleteCache = true))
+        assertFalse(isOfflineUnavailable(isOnline = true, hasCompleteCache = false))
     }
 }

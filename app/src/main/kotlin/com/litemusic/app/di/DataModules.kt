@@ -8,6 +8,7 @@ import com.litemusic.data.db.AppDatabase
 import com.litemusic.data.prefs.AuthStore
 import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.player.QueuePersistence
+import com.litemusic.app.util.NetworkStatusMonitor
 import com.litemusic.shared.player.PlayerStateMachine
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
@@ -30,6 +31,7 @@ val dataModule = module {
     single<com.litemusic.network.CookieStore> { CookieStoreImpl(get()) }
     single { CredentialBackup(get()) }
     single { ContentCache(androidContext()) }
+    single { NetworkStatusMonitor(androidContext()) }
 }
 
 /** player-core 装配 */

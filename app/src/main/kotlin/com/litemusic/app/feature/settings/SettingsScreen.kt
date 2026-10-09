@@ -1,11 +1,15 @@
 package com.litemusic.app.feature.settings
 
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -77,6 +82,8 @@ fun SettingsScreen(
     var passphrase by remember { mutableStateOf("") }
     var showPassphraseDialog by remember { mutableStateOf(false) }
     var exportMode by remember { mutableStateOf(true) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var showUpdateErrorDialog by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
         if (uri != null && passphrase.length >= 6) {
@@ -96,6 +103,57 @@ fun SettingsScreen(
     LaunchedEffect(Unit) { viewModel.load() }
     LaunchedEffect(state.toast) {
         state.toast?.let { snackbar.showSnackbar(it); viewModel.toastShown() }
+    }
+    LaunchedEffect(state.update) { if (state.update != null) showUpdateDialog = true }
+    LaunchedEffect(state.updateError) { if (state.updateError != null) showUpdateErrorDialog = true }
+
+    if (showUpdateErrorDialog && state.updateError != null) {
+        AlertDialog(
+            onDismissRequest = { showUpdateErrorDialog = false },
+            title = { Text("检查更新失败") },
+            text = { Text(state.updateError!!) },
+            confirmButton = { TextButton(onClick = { showUpdateErrorDialog = false; viewModel.checkForUpdate(BuildConfig.VERSION_CODE.toLong()) }) { Text("重试") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    showUpdateErrorDialog = false
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/wang111928/yunsheng-player/releases/latest")))
+                    }.onFailure { viewModel.showToast("无法打开浏览器，请检查是否安装浏览器后重试") }
+                }) { Text("打开 GitHub 发布页") }
+            },
+        )
+    }
+
+    if (showUpdateDialog && state.update != null) {
+        val update = state.update!!
+        AlertDialog(
+            onDismissRequest = { showUpdateDialog = false },
+            title = { Text("发现新版本 ${update.versionName}") },
+            text = {
+                Column {
+                    Text("安装包 ${update.asset.size?.let(::formatSize) ?: "大小以下载结果为准"}")
+                    if (update.releaseNotes.isNotBlank()) Text(update.releaseNotes, modifier = Modifier.padding(top = 8.dp).heightIn(max = 240.dp).verticalScroll(rememberScrollState()))
+                    if (state.downloadingUpdate) {
+                        val progress = state.totalUpdateBytes?.takeIf { it > 0 }?.let { total -> "${formatSize(state.downloadedBytes)} / ${formatSize(total)}" }
+                            ?: formatSize(state.downloadedBytes)
+                        Text("正在下载：$progress", modifier = Modifier.padding(top = 8.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val downloaded = state.downloadedUpdate
+                    if (downloaded != null) {
+                        installUpdate(context, downloaded, viewModel)
+                    } else {
+                        viewModel.downloadUpdate()
+                    }
+                }, enabled = !state.downloadingUpdate) {
+                    Text(if (state.downloadedUpdate != null) "安装更新" else if (state.downloadingUpdate) "下载中" else "下载更新")
+                }
+            },
+            dismissButton = { TextButton(onClick = { showUpdateDialog = false }) { Text("稍后") } },
+        )
     }
 
     if (showPassphraseDialog) {
@@ -185,13 +243,13 @@ fun SettingsScreen(
                     SettingsCard {
                         Row(Modifier.fillMaxWidth().padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("缓存空间", style = MaterialTheme.typography.bodyLarge)
-                                Text("包括歌曲、封面和歌词等缓存数据", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("内容缓存空间", style = MaterialTheme.typography.bodyLarge)
+                                Text("包括封面和歌词，不含歌曲音频缓存", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Text(formatSize(state.cacheUsed), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         GroupDivider()
-                        ActionLine("清理缓存", "不会删除已下载的本地音乐", "清理  ›", onClick = viewModel::clearCache)
+                        ActionLine("清理内容缓存", "只清理封面和歌词；音频缓存不设上限且不会自动淘汰", "清理  ›", onClick = viewModel::clearCache)
                     }
                 }
 
@@ -204,6 +262,31 @@ fun SettingsScreen(
                         GroupDivider()
                         ActionLine("退出登录", "清除当前设备上的登录状态", "退出  ›", destructive = true) {
                             viewModel.logout { navController.popBackStack() }
+                        }
+                    }
+                }
+
+                item { SectionLabel("软件更新") }
+                item {
+                    SettingsCard {
+                        val subtitle = when {
+                            state.downloadedUpdate != null -> "新版本已下载，点击安装后仍需系统确认"
+                            state.downloadingUpdate -> "正在下载更新"
+                            state.checkingUpdate -> "正在检查 GitHub 最新正式发布"
+                            else -> "从 GitHub 检查最新版，不会影响登录、歌单或已缓存音频"
+                        }
+                        val action = when {
+                            state.downloadedUpdate != null -> "安装  ›"
+                            state.downloadingUpdate -> "下载中"
+                            state.checkingUpdate -> "检查中"
+                            else -> "检查更新  ›"
+                        }
+                        ActionLine("自动更新", subtitle, action) {
+                            when {
+                                state.downloadedUpdate != null -> installUpdate(context, state.downloadedUpdate!!, viewModel)
+                                state.update != null -> showUpdateDialog = true
+                                else -> viewModel.checkForUpdate(BuildConfig.VERSION_CODE.toLong())
+                            }
                         }
                     }
                 }
@@ -274,6 +357,25 @@ private fun ActionLine(title: String, subtitle: String, actionLabel: String, des
         }
         Text(actionLabel, style = MaterialTheme.typography.labelLarge, color = actionColor)
     }
+}
+
+private fun installUpdate(context: android.content.Context, file: File, viewModel: SettingsViewModel) {
+    if (!file.isFile) {
+        viewModel.discardMissingUpdate()
+        return
+    }
+    runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+            viewModel.showToast("请允许安装未知来源应用后返回此处继续安装")
+        } else {
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
+            context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }
+    }.onFailure { viewModel.showToast("无法打开安装器，请检查系统安装权限后重试") }
 }
 
 @Composable

@@ -21,12 +21,21 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import com.litemusic.design.components.NmlIconButton as IconButton
 import com.litemusic.design.components.nmlPressable
+import com.litemusic.design.components.unavailableSongBackground
+import com.litemusic.design.components.unavailableSongForeground
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -34,6 +43,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.litemusic.shared.player.PlayerUiState
 import com.litemusic.shared.player.QueueItem
+import com.litemusic.player.OfflinePlaybackAvailability
+import com.litemusic.app.util.NetworkStatusMonitor
+import org.koin.compose.koinInject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal data class PlaybackQueueRow(
     val index: Int,
@@ -61,6 +75,25 @@ fun PlaybackQueueSheet(
     onRemove: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
 ) {
+    val network: NetworkStatusMonitor = koinInject()
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val context = LocalContext.current
+    val offlineAvailable by key(state.queue, isOnline, cacheRevision) {
+        produceState<List<Boolean>>(
+            // Re-key the state so a newly offline queue is gray during its cache scan rather
+            // than displaying the previous online result until the coroutine finishes.
+            initialValue = List(state.queue.size) { isOnline },
+            state.queue,
+            isOnline,
+            cacheRevision,
+        ) {
+            value = withContext(Dispatchers.IO) {
+                state.queue.map { item -> !isOfflineUnavailable(isOnline, OfflinePlaybackAvailability.canPlay(context, item)) }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { network.refresh() }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(),
@@ -95,6 +128,7 @@ fun PlaybackQueueSheet(
                 items(playbackQueueRows(state), key = { it.key }) { row ->
                     QueueRow(
                         row = row,
+                        isOfflineAvailable = offlineAvailable.getOrNull(row.index) ?: true,
                         canMoveLeft = row.index > 0,
                         canMoveRight = row.index < state.queue.lastIndex,
                         onPlay = { onPlay(row.index) },
@@ -111,6 +145,7 @@ fun PlaybackQueueSheet(
 @Composable
 private fun QueueRow(
     row: PlaybackQueueRow,
+    isOfflineAvailable: Boolean,
     canMoveLeft: Boolean,
     canMoveRight: Boolean,
     onPlay: () -> Unit,
@@ -118,23 +153,26 @@ private fun QueueRow(
     onMoveLeft: () -> Unit,
     onMoveRight: () -> Unit,
 ) {
+    val unavailableForeground = unavailableSongForeground(MaterialTheme.colorScheme.surface)
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(
-                if (row.isCurrent) MaterialTheme.colorScheme.primaryContainer
+                if (!isOfflineAvailable) unavailableSongBackground(MaterialTheme.colorScheme.surface)
+                else if (row.isCurrent) MaterialTheme.colorScheme.primaryContainer
                 else Color.Transparent,
             )
-            .nmlPressable(onClick = onPlay)
+            .nmlPressable(onClick = onPlay, enabled = isOfflineAvailable)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             Icons.Default.PlayArrow,
             contentDescription = null,
-            tint = if (row.isCurrent) MaterialTheme.colorScheme.primary
+            tint = if (!isOfflineAvailable) unavailableForeground
+            else if (row.isCurrent) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
             modifier = Modifier.size(20.dp),
         )
@@ -143,15 +181,16 @@ private fun QueueRow(
                 row.item.title + if (row.item.isLocal) "  · 本地" else "",
                 style = if (row.isCurrent) MaterialTheme.typography.bodyLarge
                 else MaterialTheme.typography.bodyMedium,
-                color = if (row.isCurrent) MaterialTheme.colorScheme.primary
+                color = if (!isOfflineAvailable) unavailableForeground
+                else if (row.isCurrent) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                row.item.artist,
+                if (isOfflineAvailable) row.item.artist else "离线不可播",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (isOfflineAvailable) MaterialTheme.colorScheme.onSurfaceVariant else unavailableForeground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

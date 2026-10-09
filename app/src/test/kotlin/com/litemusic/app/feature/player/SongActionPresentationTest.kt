@@ -29,6 +29,14 @@ class SongActionPresentationTest {
     }
 
     @Test
+    fun playNextRejectsAnUncachedRemoteSongOnlyWhileOffline() {
+        assertTrue(canEnqueueNext(isOnline = true, hasCompleteCache = false))
+        assertTrue(canEnqueueNext(isOnline = false, hasCompleteCache = true))
+        assertEquals(false, canEnqueueNext(isOnline = false, hasCompleteCache = false))
+        assertEquals("离线状态下该歌曲尚未完整缓存，无法加入播放队列", offlineEnqueueNextMessage())
+    }
+
+    @Test
     fun detectedLyricSectionsAreLabeled高潮() {
         assertEquals("高潮", LyricSection(0, 1, 0, 1).label)
 

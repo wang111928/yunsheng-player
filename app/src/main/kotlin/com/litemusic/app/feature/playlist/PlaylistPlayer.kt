@@ -1,5 +1,7 @@
 package com.litemusic.app.feature.playlist
 
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -7,16 +9,23 @@ import androidx.navigation.NavController
 import com.litemusic.app.data.HomeRepository
 import com.litemusic.app.data.SongRepository
 import com.litemusic.app.feature.player.enqueueNext
+import com.litemusic.app.feature.player.canEnqueueNext
+import com.litemusic.app.feature.player.offlineEnqueueNextMessage
+import com.litemusic.app.util.NetworkStatusMonitor
 import com.litemusic.app.ui.Routes
 import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.player.PlaybackController
+import com.litemusic.player.OfflinePlaybackAvailability
 import com.litemusic.shared.api.NMApi
 import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.Song
 import com.litemusic.shared.model.RadioProgram
+import com.litemusic.shared.player.QueueItem
 import com.litemusic.shared.util.AppResult
 import com.litemusic.shared.util.Quality
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import org.koin.compose.koinInject
 
@@ -47,6 +56,34 @@ internal fun programCommentThreadId(programId: Long): String = "A_DJ_1_$programI
 internal fun queueItemsForQuality(songs: List<Song>, quality: Quality, builder: QueueBuilder = QueueBuilder()) =
     songs.map { builder.toQueueItem(it, quality) }
 
+internal data class PlaybackQueueSelection(val items: List<QueueItem>, val startIndex: Int)
+
+/** Keep the tapped occurrence when filtering, even if the queue contains duplicate song IDs. */
+internal fun selectOfflinePlaybackQueue(
+    cachedItems: List<QueueItem?>,
+    sourceIndex: Int,
+    allowFirstAvailable: Boolean = false,
+): PlaybackQueueSelection? {
+    if (sourceIndex !in cachedItems.indices) return null
+    val available = cachedItems.filterNotNull()
+    if (available.isEmpty()) return null
+    if (cachedItems[sourceIndex] == null && !allowFirstAvailable) return null
+    val start = if (cachedItems[sourceIndex] == null) 0 else cachedItems.take(sourceIndex).count { it != null }
+    return PlaybackQueueSelection(available, start)
+}
+
+/** Metadata enrichment must retain the filtered queue's order, occurrences and cached quality. */
+internal fun queueMetadataForSelection(
+    selectedItems: List<QueueItem>,
+    enrichedSongs: List<Song>,
+    builder: QueueBuilder = QueueBuilder(),
+): List<QueueItem> {
+    val byId = enrichedSongs.associateBy { it.id }
+    return selectedItems.map { item ->
+        byId[item.id]?.let { builder.toQueueItem(it, item.quality) } ?: item
+    }
+}
+
 /**
  * 歌单/列表 → 队列 → 播放 的通用入口（点击即播）。
  */
@@ -57,46 +94,80 @@ class PlaylistPlayer(
     private val homeRepository: HomeRepository,
     private val api: NMApi,
     private val settings: SettingsStore,
+    private val context: Context,
+    private val network: NetworkStatusMonitor,
     private val builder: QueueBuilder = QueueBuilder(),
 ) {
     private var playGeneration = 0L
 
-    fun playSongs(navController: NavController, songs: List<Song>, startIndex: Int = 0) {
+    fun playSongs(
+        navController: NavController,
+        songs: List<Song>,
+        startIndex: Int = 0,
+        allowOfflineStartFallback: Boolean = false,
+    ) {
         if (songs.isEmpty()) return
         val generation = ++playGeneration
         scope.launch {
             val quality = settings.quality.first()
             if (generation != playGeneration) return@launch
+            val requestedItems = queueItemsForQuality(songs, quality, builder)
+            val requestedIndex = startIndex.coerceIn(requestedItems.indices)
+            network.refresh()
+            val selection = if (network.isOnline.value) {
+                PlaybackQueueSelection(requestedItems, requestedIndex)
+            } else {
+                val cachedItems = withContext(Dispatchers.IO) {
+                    requestedItems.map { OfflinePlaybackAvailability.playableCachedItem(context, it) }
+                }
+                if (generation != playGeneration) return@launch
+                network.refresh()
+                if (network.isOnline.value) PlaybackQueueSelection(requestedItems, requestedIndex)
+                else selectOfflinePlaybackQueue(cachedItems, requestedIndex, allowOfflineStartFallback)
+            }
+            if (selection == null) {
+                Toast.makeText(context, "当前无网络，所选歌曲未完整缓存，暂时无法播放", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
             val missingCoverIds = songs.filter { it.coverUrl.isBlank() }.map { it.id }.filter { it > 0L }
             // Resolve the saved default before creating the queue: this prevents the
             // former hard-coded 320K from briefly winning a DataStore race.
-            startQueue(navController, songs, startIndex, quality)
+            controller.setQueueAndPlay(selection.items, selection.startIndex)
+            navController.navigate(Routes.PLAYER)
             if (missingCoverIds.isEmpty()) return@launch
             val enriched = when (val result = songRepository.details(missingCoverIds)) {
                 is AppResult.Success -> mergeSongDetails(songs, result.data)
                 is AppResult.Failure -> songs
             }
             if (generation == playGeneration) {
-                controller.replaceQueueMetadata(queueItemsForQuality(enriched, quality, builder))
+                controller.replaceQueueMetadata(queueMetadataForSelection(selection.items, enriched, builder))
             }
         }
     }
 
     /** Add a later song using the persisted default, independent of a manual current-song choice. */
-    fun enqueueNext(song: Song) {
+    fun enqueueNext(song: Song, onUnavailable: (String) -> Unit = {}) {
         val queueGeneration = playGeneration
         scope.launch {
             val quality = settings.quality.first()
             // A tap for an old queue must not append to a queue that was replaced while
             // DataStore was being read.
-            if (queueGeneration == playGeneration) controller.enqueueNext(song, quality)
+            if (queueGeneration != playGeneration) return@launch
+            val item = builder.toQueueItem(song, quality)
+            val cachedItem = withContext(Dispatchers.IO) {
+                OfflinePlaybackAvailability.playableCachedItem(context, item)
+            }
+            if (queueGeneration != playGeneration) return@launch
+            // Recheck after disk work: connectivity or the queue can change while
+            // checking cache. Use the cached quality when inserting offline.
+            network.refresh()
+            val isOnline = network.isOnline.value
+            if (!canEnqueueNext(isOnline, hasCompleteCache = cachedItem != null)) {
+                onUnavailable(offlineEnqueueNextMessage())
+                return@launch
+            }
+            controller.enqueueNext(if (isOnline) item else cachedItem ?: return@launch)
         }
-    }
-
-    private fun startQueue(navController: NavController, songs: List<Song>, startIndex: Int, quality: Quality) {
-        val items = queueItemsForQuality(songs, quality, builder)
-        controller.setQueue(items, startIndex.coerceIn(items.indices))
-        navController.navigate(Routes.PLAYER)
     }
 
     /** Program summaries are metadata, not timed lyrics or a transcript. */
@@ -166,7 +237,7 @@ class PlaylistPlayer(
                 description = program.text,
                 commentThreadId = program.id.takeIf { it > 0L }?.let(::programCommentThreadId),
             )
-            controller.setQueue(listOf(item), 0)
+            controller.setQueueAndPlay(listOf(item), 0)
             navController.navigate(Routes.PLAYER)
         }
     }
@@ -202,9 +273,11 @@ fun rememberPlaylistPlayer(
     homeRepository: HomeRepository = koinInject(),
     api: NMApi = koinInject(),
     settings: SettingsStore = koinInject(),
+    context: Context = androidx.compose.ui.platform.LocalContext.current,
+    network: NetworkStatusMonitor = koinInject(),
 ): PlaylistPlayer {
     val scope = rememberCoroutineScope()
-    return remember(controller, songRepository, homeRepository, api, settings, scope) {
-        PlaylistPlayer(scope, controller, songRepository, homeRepository, api, settings)
+    return remember(controller, songRepository, homeRepository, api, settings, context, network, scope) {
+        PlaylistPlayer(scope, controller, songRepository, homeRepository, api, settings, context.applicationContext, network)
     }
 }

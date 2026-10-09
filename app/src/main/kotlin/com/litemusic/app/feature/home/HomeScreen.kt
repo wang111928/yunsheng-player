@@ -45,17 +45,26 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import coil3.compose.AsyncImage
 import com.litemusic.app.data.PlaylistRepository
 import com.litemusic.app.feature.comment.CommentSheetController
+import com.litemusic.app.feature.player.offlinePlayableQueue
+import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.app.feature.player.offlineUnavailableLabel
+import com.litemusic.app.feature.player.rememberOfflineUnavailableIds
 import com.litemusic.app.feature.player.SongActionSheet
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
 import com.litemusic.app.ui.Routes
 import com.litemusic.app.ui.navigateToBottomTab
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.CoverCard
 import com.litemusic.design.components.DailyBanner
 import com.litemusic.design.components.EmptyView
@@ -68,10 +77,13 @@ import com.litemusic.design.components.SectionHeader
 import com.litemusic.design.components.SongListItem
 import com.litemusic.design.components.nmlPressable
 import com.litemusic.design.theme.NmlTheme
+import com.litemusic.player.OfflinePlaybackAvailability
 import com.litemusic.player.PlaybackController
+import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.Song
 import com.litemusic.shared.model.Artist
 import com.litemusic.shared.util.AppResult
+import com.litemusic.shared.util.Quality
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import org.koin.androidx.compose.koinViewModel
@@ -95,6 +107,16 @@ fun HomeScreen(
     val player = rememberPlaylistPlayer()
     val controller: PlaybackController = koinInject()
     val playlistRepository: PlaylistRepository = koinInject()
+    val settings: SettingsStore = koinInject()
+    val network: NetworkStatusMonitor = koinInject()
+    val quality by settings.quality.collectAsState(initial = Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val context = LocalContext.current
+    val queueBuilder = remember { QueueBuilder() }
+    // Radio changes can occur while this destination is stopped. Refresh before rendering a
+    // cached recommendation list so unavailable rows never briefly look playable.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { network.refresh() }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var actionSong by remember { mutableStateOf<Song?>(null) }
@@ -104,6 +126,17 @@ fun HomeScreen(
     val playlists = data?.playlists ?: emptyList()
     val toplists = data?.toplists ?: emptyList()
     val artists = data?.artists ?: emptyList()
+    val homeUnavailableIds = rememberOfflineUnavailableIds(
+        songs = homeSongs,
+        isOnline = isOnline,
+        quality = quality,
+        cacheRevision = cacheRevision,
+        context = context,
+        queueBuilder = queueBuilder,
+    )
+    val playableHomeSongs = remember(homeSongs, isOnline, homeUnavailableIds) {
+        offlinePlayableQueue(homeSongs, isOnline, homeUnavailableIds)
+    }
     // Retain the recommendation position while visiting a different home channel.
     val recommendationListState = rememberLazyListState()
 
@@ -111,7 +144,9 @@ fun HomeScreen(
         SongActionSheet(
             song = song,
             onDismiss = { actionSong = null },
-            onPlayNext = { player.enqueueNext(song) },
+            onPlayNext = {
+                player.enqueueNext(song) { message -> scope.launch { snackbar.showSnackbar(message) } }
+            },
             onLike = {
                 scope.launch {
                     val liked = song.id in playlistRepository.likedIds.value
@@ -264,19 +299,33 @@ fun HomeScreen(
                                 item(key = "home-songs-h") {
                                     SectionHeader(
                                         title = "为你推荐 · " + homeSongs.size + " 首",
-                                        playAll = { player.playSongs(navController, homeSongs, 0) },
+                                        playAll = { player.playSongs(navController, playableHomeSongs, 0) },
                                         onQueue = { navController.navigate(Routes.PLAYER) },
                                     )
                                 }
                                 itemsIndexed(homeSongs, key = { _, s -> s.id }) { index, song ->
+                                    val queueIndex = offlineQueueStartIndex(
+                                        songs = homeSongs,
+                                        sourceIndex = index,
+                                        isOnline = isOnline,
+                                        unavailableIds = homeUnavailableIds,
+                                    )
                                     SongListItem(
                                         song = song,
                                         index = index,
+                                        enabled = queueIndex != null,
+                                        disabledReason = offlineUnavailableLabel(
+                                            isOnline,
+                                            homeUnavailableIds,
+                                            song.id,
+                                        ),
                                         onMv = song.mv.takeIf { it > 0 }?.let { mvId ->
                                             { navController.navigate(Routes.mv(mvId)) }
                                         },
                                         onMore = { actionSong = song },
-                                        onClick = { player.playSongs(navController, homeSongs, index) },
+                                        onClick = {
+                                            queueIndex?.let { player.playSongs(navController, playableHomeSongs, it) }
+                                        },
                                     )
                                 }
                                 if (state.homeSongsLoadingMore) {

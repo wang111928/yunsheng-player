@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -30,16 +31,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import coil3.compose.AsyncImage
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
+import com.litemusic.app.feature.player.offlinePlayableQueue
+import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.app.feature.player.offlineUnavailableLabel
+import com.litemusic.app.feature.player.rememberOfflineUnavailableIds
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.ErrorView
 import com.litemusic.design.components.SongListItem
+import com.litemusic.player.OfflinePlaybackAvailability
 import com.litemusic.shared.api.NMApi
+import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.ArtistDetailResponse
 import com.litemusic.shared.util.AppResult
+import com.litemusic.shared.util.Quality
 import org.koin.compose.koinInject
 
 /** A real artist endpoint replaces the previous dialog that searched the name again. */
@@ -86,16 +99,35 @@ fun ArtistDetailScreen(navController: NavController, artistId: Long) {
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             error != null -> ErrorView(error ?: "歌手信息读取失败", onRetry = { request++ })
-            result != null -> ArtistContent(result!!, onPlay = { index ->
-                player.playSongs(navController, result!!.hotSongs, index)
+            result != null -> ArtistContent(result!!, onPlay = { songs, index ->
+                player.playSongs(navController, songs, index)
             })
         }
     }
 }
 
 @Composable
-private fun ArtistContent(detail: ArtistDetailResponse, onPlay: (Int) -> Unit) {
+private fun ArtistContent(detail: ArtistDetailResponse, onPlay: (List<com.litemusic.shared.model.Song>, Int) -> Unit) {
     val artist = detail.artist ?: return
+    val context = LocalContext.current
+    val settings: SettingsStore = koinInject()
+    val network: NetworkStatusMonitor = koinInject()
+    val quality by settings.quality.collectAsState(initial = Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val queueBuilder = remember { QueueBuilder() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { network.refresh() }
+    val unavailableSongIds = rememberOfflineUnavailableIds(
+        songs = detail.hotSongs,
+        isOnline = isOnline,
+        quality = quality,
+        cacheRevision = cacheRevision,
+        context = context,
+        queueBuilder = queueBuilder,
+    )
+    val playableSongs = remember(detail.hotSongs, isOnline, unavailableSongIds) {
+        offlinePlayableQueue(detail.hotSongs, isOnline, unavailableSongIds)
+    }
     androidx.compose.foundation.lazy.LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -128,7 +160,20 @@ private fun ArtistContent(detail: ArtistDetailResponse, onPlay: (Int) -> Unit) {
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             }
             items(detail.hotSongs.size, key = { detail.hotSongs[it].id }) { index ->
-                SongListItem(song = detail.hotSongs[index], index = index, onClick = { onPlay(index) })
+                val song = detail.hotSongs[index]
+                val queueIndex = offlineQueueStartIndex(
+                    songs = detail.hotSongs,
+                    sourceIndex = index,
+                    isOnline = isOnline,
+                    unavailableIds = unavailableSongIds,
+                )
+                SongListItem(
+                    song = song,
+                    index = index,
+                    enabled = queueIndex != null,
+                    disabledReason = offlineUnavailableLabel(isOnline, unavailableSongIds, song.id),
+                    onClick = { queueIndex?.let { onPlay(playableSongs, it) } },
+                )
             }
         } else {
             item(key = "empty-songs") {

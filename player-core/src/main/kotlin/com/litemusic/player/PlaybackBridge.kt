@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 /** 播放服务桥（App 装配）：URL 解析 + 状态机注入 */
 interface PlaybackBridge {
     val stateMachine: PlayerStateMachine
+    /** Service waits for persisted queue restoration before mapping state to ExoPlayer. */
+    suspend fun awaitInitialQueueRestore() {}
     /** 解析播放地址；[forceRefresh] 为 true 时忽略并清除缓存，强制向服务端重取 */
     suspend fun resolveUrl(item: QueueItem, forceRefresh: Boolean = false): String
     val favoriteIds: StateFlow<Set<Long>>? get() = null

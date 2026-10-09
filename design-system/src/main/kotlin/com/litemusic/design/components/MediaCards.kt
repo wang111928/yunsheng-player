@@ -29,6 +29,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -52,6 +55,13 @@ private fun Modifier.nmlPress(onClick: () -> Unit): Modifier {
     return nmlPressable(onClick)
 }
 
+/** Keep unavailable tracks visibly gray even when a skin has tinted surface tokens. */
+fun unavailableSongForeground(surface: Color): Color =
+    if (surface.luminance() < 0.5f) Color(0xFFADB0B7) else Color(0xFF666A70)
+
+fun unavailableSongBackground(surface: Color): Color =
+    if (surface.luminance() < 0.5f) Color(0xFF2B2D32) else Color(0xFFECEDEF)
+
 @Composable
 fun SongListItem(
     song: Song,
@@ -60,13 +70,28 @@ fun SongListItem(
     trailing: (@Composable () -> Unit)? = null,
     onMv: (() -> Unit)? = null,
     onMore: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    /** Shown for an intentionally unavailable row, for example an uncached offline song. */
+    disabledReason: String? = null,
     onClick: () -> Unit,
 ) {
+    val disabledContentColor = unavailableSongForeground(MaterialTheme.colorScheme.surface)
+    val titleColor = if (enabled) MaterialTheme.colorScheme.onSurface
+    else disabledContentColor
+    val subtitleColor = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+    else disabledContentColor
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(70.dp)
-            .nmlPress(onClick)
+            // Keep a solid neutral surface behind disabled copy on vivid art skins.
+            // Fading the entire row made the gray text hard to see against the painting.
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (enabled) Color.Transparent
+                else unavailableSongBackground(MaterialTheme.colorScheme.surface),
+            )
+            .nmlPressable(onClick, enabled = enabled)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -74,6 +99,9 @@ fun SongListItem(
             model = song.coverThumbUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
+            colorFilter = if (enabled) null else ColorFilter.colorMatrix(
+                ColorMatrix().apply { setToSaturation(0f) },
+            ),
             modifier = Modifier
                 .size(48.dp)
                 .clip(RoundedCornerShape(11.dp))
@@ -81,14 +109,29 @@ fun SongListItem(
         )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(song.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                song.artistNames + (song.albumName.takeIf { it.isNotBlank() }?.let { " - " + it } ?: ""),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                song.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = titleColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            Text(
+                song.artistNames + (song.albumName.takeIf { it.isNotBlank() }?.let { " - " + it } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = subtitleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!enabled && !disabledReason.isNullOrBlank()) {
+                Text(
+                    disabledReason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = disabledContentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         if (onMv != null && song.mv > 0) {
             Box(
@@ -110,7 +153,7 @@ fun SongListItem(
             Text(
                 "VIP",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+                color = if (enabled) MaterialTheme.colorScheme.primary else disabledContentColor,
                 modifier = Modifier.padding(start = 4.dp),
             )
         }

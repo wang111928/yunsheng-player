@@ -21,13 +21,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
 import com.litemusic.app.data.HomeRepository
+import com.litemusic.app.feature.player.offlinePlayableQueue
+import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.app.feature.player.offlineUnavailableLabel
+import com.litemusic.app.feature.player.rememberOfflineUnavailableIds
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
 import com.litemusic.app.ui.Routes
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.LoadingView
 import com.litemusic.design.components.SongListItem
 import com.litemusic.design.components.VinylDisc
@@ -37,6 +44,9 @@ import com.litemusic.shared.model.RadioProgram
 import com.litemusic.shared.model.RadioStation
 import com.litemusic.shared.model.Song
 import com.litemusic.shared.util.AppResult
+import com.litemusic.shared.util.Quality
+import com.litemusic.shared.domain.QueueBuilder
+import com.litemusic.player.OfflinePlaybackAvailability
 import org.koin.compose.koinInject
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -189,6 +199,13 @@ internal fun HomeChannelContent(
     val api: NMApi = koinInject()
     val homeRepository: HomeRepository = koinInject()
     val player = rememberPlaylistPlayer()
+    val settings: SettingsStore = koinInject()
+    val network: NetworkStatusMonitor = koinInject()
+    val quality by settings.quality.collectAsState(initial = Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val context = LocalContext.current
+    val queueBuilder = remember { QueueBuilder() }
     val session by viewModel.channelSession.collectAsState()
     var selectedRadio by remember { mutableStateOf<RadioStation?>(null) }
     var programs by remember { mutableStateOf<List<RadioProgram>>(emptyList()) }
@@ -228,6 +245,17 @@ internal fun HomeChannelContent(
     val refreshCount = session.refreshes[channel] ?: 0
     val loadMoreCount = session.loadMoreRequests[channel] ?: 0
     val feed = session.feeds[channel] ?: ChannelFeedState()
+    val unavailableSongIds = rememberOfflineUnavailableIds(
+        songs = feed.songs,
+        isOnline = isOnline,
+        quality = quality,
+        cacheRevision = cacheRevision,
+        context = context,
+        queueBuilder = queueBuilder,
+    )
+    val playableSongs = remember(feed.songs, isOnline, unavailableSongIds) {
+        offlinePlayableQueue(feed.songs, isOnline, unavailableSongIds)
+    }
     val listState = rememberLazyListState()
     LaunchedEffect(channel) {
         listState.scrollToItem(0)
@@ -508,7 +536,8 @@ internal fun HomeChannelContent(
                 item(key = "heart-hero") {
                     HeartThrobHero(
                         song = feed.songs.first(),
-                        onPlay = { player.playSongs(navController, feed.songs, 0) },
+                        enabled = playableSongs.isNotEmpty(),
+                        onPlay = { player.playSongs(navController, playableSongs, 0) },
                     )
                 }
                 item(key = "heart-queue-title") {
@@ -559,8 +588,17 @@ internal fun HomeChannelContent(
                 }
             }
             itemsIndexed(feed.songs, key = { _, song -> song.id }) { index, song ->
-                SongListItem(song = song, index = index, onClick = {
-                    player.playSongs(navController, feed.songs, index)
+                val queueIndex = offlineQueueStartIndex(
+                    songs = feed.songs,
+                    sourceIndex = index,
+                    isOnline = isOnline,
+                    unavailableIds = unavailableSongIds,
+                )
+                SongListItem(song = song, index = index,
+                    enabled = queueIndex != null,
+                    disabledReason = offlineUnavailableLabel(isOnline, unavailableSongIds, song.id),
+                    onClick = {
+                    queueIndex?.let { player.playSongs(navController, playableSongs, it) }
                 }, onMv = song.mv.takeIf { it > 0 }?.let { mvId ->
                     { navController.navigate(Routes.mv(mvId)) }
                 })
@@ -642,7 +680,7 @@ internal fun HomeChannelContent(
 private const val CHANNEL_PAGE_SIZE = 30
 
 @Composable
-private fun HeartThrobHero(song: Song, onPlay: () -> Unit) {
+private fun HeartThrobHero(song: Song, enabled: Boolean, onPlay: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(28.dp),
@@ -658,7 +696,7 @@ private fun HeartThrobHero(song: Song, onPlay: () -> Unit) {
                 modifier = Modifier.padding(top = 14.dp, start = 24.dp, end = 24.dp))
             Text(song.artistNames, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            FilledTonalButton(onClick = onPlay, modifier = Modifier.padding(top = 14.dp)) {
+            FilledTonalButton(onClick = onPlay, enabled = enabled, modifier = Modifier.padding(top = 14.dp)) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null)
                 Text("播放心动歌单", modifier = Modifier.padding(start = 4.dp))
             }

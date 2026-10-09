@@ -65,7 +65,10 @@ class PlaybackController(
     fun playIndex(index: Int) {
         stateMachine.playIndex(index)
         ensureConnected()
-        controller?.play()
+        val current = state.value.current
+        if (canControlActiveMedia(controller?.currentMediaItem?.mediaId, current)) {
+            controller?.play()
+        }
     }
 
     /**
@@ -79,10 +82,12 @@ class PlaybackController(
     fun toggle() {
         val s = state.value
         if (s.current == null) return
-        val wantPlay = s.phase != PlayPhase.PLAYING
+        val wantPlay = !toggleCancelsPlayback(s.phase)
         if (wantPlay) {
             stateMachine.onPlaying()
-            controller?.play()
+            if (canControlActiveMedia(controller?.currentMediaItem?.mediaId, s.current)) {
+                controller?.play()
+            }
         } else {
             stateMachine.onPaused()
             controller?.pause()
@@ -121,6 +126,12 @@ class PlaybackController(
 
     fun setQueue(items: List<QueueItem>, startIndex: Int = 0) {
         stateMachine.setQueue(items, startIndex)
+    }
+
+    /** Called only by an explicit list/program tap; restored queues remain paused. */
+    fun setQueueAndPlay(items: List<QueueItem>, startIndex: Int = 0) {
+        stateMachine.setQueueAndPlay(items, startIndex)
+        ensureConnected()
     }
 
     fun enqueue(items: List<QueueItem>) = stateMachine.enqueueAppend(items)

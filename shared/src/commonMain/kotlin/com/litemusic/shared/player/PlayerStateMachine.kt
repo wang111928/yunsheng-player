@@ -41,6 +41,8 @@ data class PlayerUiState(
     val bufferedMs: Long = 0,
     val playMode: PlayMode = PlayMode.SEQUENCE,
     val isPreparingNext: Boolean = false,
+    /** Increments only for a direct list/program selection, never for buffering callbacks. */
+    val selectionGeneration: Long = 0L,
     val error: String? = null,
 ) {
     val current: QueueItem? get() = queue.getOrNull(currentIndex)
@@ -70,6 +72,27 @@ class PlayerStateMachine {
         val index = if (items.isEmpty()) -1 else startIndex.coerceIn(0, items.lastIndex)
         shuffleOrder = items.indices.shuffled()
         _state.update { it.copy(queue = items, currentIndex = index, positionMs = 0, durationMs = 0, phase = PlayPhase.READY) }
+    }
+
+    /**
+     * Replacing a queue from a direct user selection is a play request.  Keep the
+     * queue and play intent in one state transition so a collector cannot observe
+     * a new READY queue and mistake it for a restored, intentionally-paused queue.
+     */
+    fun setQueueAndPlay(items: List<QueueItem>, startIndex: Int = 0) {
+        val index = if (items.isEmpty()) -1 else startIndex.coerceIn(0, items.lastIndex)
+        shuffleOrder = items.indices.shuffled()
+        _state.update {
+            it.copy(
+                queue = items,
+                currentIndex = index,
+                positionMs = 0,
+                durationMs = 0,
+                phase = if (index >= 0) PlayPhase.LOADING else PlayPhase.IDLE,
+                selectionGeneration = it.selectionGeneration + 1L,
+                error = null,
+            )
+        }
     }
 
     fun enqueueAppend(items: List<QueueItem>) {
@@ -103,7 +126,17 @@ class PlayerStateMachine {
     fun playIndex(index: Int) {
         val q = _state.value.queue
         if (index !in q.indices) return
-        _state.update { it.copy(currentIndex = index, positionMs = 0, durationMs = q[index].durationMs, phase = PlayPhase.LOADING) }
+        // Queue navigation is also an explicit selection.  This includes adjacent duplicate
+        // media keys, for which ExoPlayer cannot detect an item change by itself.
+        _state.update {
+            it.copy(
+                currentIndex = index,
+                positionMs = 0,
+                durationMs = q[index].durationMs,
+                phase = PlayPhase.LOADING,
+                selectionGeneration = it.selectionGeneration + 1L,
+            )
+        }
     }
 
     /** 计算下一曲索引（考虑播放模式），返回 null 表示队列尽头（顺序模式且非循环） */
@@ -123,10 +156,10 @@ class PlayerStateMachine {
 
     fun previousIndex(): Int {
         val s = _state.value
-        if (s.queue.isEmpty()) return -1
+        if (s.queue.isEmpty() || s.currentIndex !in s.queue.indices) return -1
         return when (s.playMode) {
             PlayMode.SHUFFLE -> prevIn(shuffleOrder, s.currentIndex)
-            else -> if (s.positionMs > 3000) s.currentIndex else (s.currentIndex - 1 + s.queue.size) % s.queue.size
+            else -> (s.currentIndex - 1 + s.queue.size) % s.queue.size
         }
     }
 
@@ -208,6 +241,25 @@ class PlayerStateMachine {
             playMode = snapshot.playMode,
             phase = PlayPhase.PAUSED,
         )
+    }
+
+    /** Apply a persisted snapshot only while app startup has not received a user action. */
+    fun restoreIfPristine(snapshot: QueueSnapshot): Boolean {
+        while (true) {
+            val current = _state.value
+            if (current != PlayerUiState()) return false
+            val restored = PlayerUiState(
+                queue = snapshot.items,
+                currentIndex = snapshot.currentIndex,
+                positionMs = snapshot.positionMs,
+                playMode = snapshot.playMode,
+                phase = PlayPhase.PAUSED,
+            )
+            if (_state.compareAndSet(current, restored)) {
+                shuffleOrder = snapshot.items.indices.shuffled()
+                return true
+            }
+        }
     }
 
     private fun nextIn(order: List<Int>, current: Int): Int? {

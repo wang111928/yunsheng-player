@@ -38,8 +38,15 @@ class QueueSessionNavigatorTest {
         assertTrue(QueueSessionNavigator(sm).next()); assertTrue(sm.state.value.currentIndex in 0..2)
     }
 
-    @Test fun previousAfterThreeSecondsRestartsCurrentSong() {
+    @Test fun previousAfterThreeSecondsStartsThePriorSong() {
         val sm = machine(start = 1); sm.updatePosition(4_000)
-        assertTrue(QueueSessionNavigator(sm).previous()); assertEquals(1, sm.state.value.currentIndex)
+        val generation = sm.state.value.selectionGeneration
+
+        assertTrue(QueueSessionNavigator(sm).previous())
+
+        assertEquals(0, sm.state.value.currentIndex)
+        assertEquals(0L, sm.state.value.positionMs)
+        assertEquals(com.litemusic.shared.player.PlayPhase.LOADING, sm.state.value.phase)
+        assertEquals(generation + 1L, sm.state.value.selectionGeneration)
     }
 }

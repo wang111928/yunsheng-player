@@ -41,6 +41,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
@@ -65,9 +67,19 @@ import com.litemusic.design.components.formatCount
 import com.litemusic.design.components.NmlButton
 import com.litemusic.design.components.SectionHeader
 import com.litemusic.player.PlaybackController
+import com.litemusic.player.OfflinePlaybackAvailability
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.app.feature.player.isOfflineUnavailable
+import com.litemusic.app.feature.player.offlineUnavailableLabel
+import com.litemusic.app.feature.player.offlinePlayableQueue
+import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.data.prefs.SettingsStore
+import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.Song
 import com.litemusic.shared.model.Artist
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.koin.compose.koinInject
 import org.koin.androidx.compose.koinViewModel
 
@@ -87,6 +99,12 @@ fun PlaylistScreen(
     var confirmDelete by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val settings: SettingsStore = koinInject()
+    val network: NetworkStatusMonitor = koinInject()
+    val quality by settings.quality.collectAsState(initial = com.litemusic.shared.util.Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val queueBuilder = remember { QueueBuilder() }
 
     selectedArtist?.let { artist ->
         ArtistInfoDialog(artist, onDismiss = { selectedArtist = null }, onOpenDetail = {
@@ -99,7 +117,9 @@ fun PlaylistScreen(
         SongActionSheet(
             song = song,
             onDismiss = { actionSong = null },
-            onPlayNext = { player.enqueueNext(song) },
+            onPlayNext = {
+                player.enqueueNext(song) { message -> scope.launch { snackbar.showSnackbar(message) } }
+            },
             onLike = { viewModel.toggleLike(song.id) },
             onComment = { CommentSheetController.open(song.id) },
             onArtist = song.ar.firstOrNull()?.takeIf { it.id > 0 }?.let { artist ->
@@ -114,6 +134,7 @@ fun PlaylistScreen(
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        network.refresh()
         if (viewModel.state.value.playlist?.id != playlistId) {
             viewModel.load(playlistId)
         }
@@ -125,6 +146,31 @@ fun PlaylistScreen(
             ErrorView(state.error!!, onRetry = { viewModel.load(playlistId) })
         state.playlist != null -> {
             val pl = state.playlist!!
+            // Cache span lookups may hit disk.  Recompute off the frame thread and retain a
+            // pending value while a changed cache/network state is being scanned.
+            val offlineUnavailableIds by key(pl.tracks, quality, isOnline, cacheRevision) {
+                produceState<Set<Long>?>(
+                    initialValue = if (isOnline) emptySet() else null,
+                    pl.tracks,
+                    quality,
+                    isOnline,
+                    cacheRevision,
+                ) {
+                    value = withContext(Dispatchers.IO) {
+                        if (isOnline) emptySet() else pl.tracks
+                            .filter { song ->
+                                isOfflineUnavailable(
+                                    isOnline,
+                                    OfflinePlaybackAvailability.canPlay(context, queueBuilder.toQueueItem(song, quality)),
+                                )
+                            }
+                            .mapTo(mutableSetOf()) { it.id }
+                    }
+                }
+            }
+            val playableSongs = remember(pl.tracks, isOnline, offlineUnavailableIds) {
+                offlinePlayableQueue(pl.tracks, isOnline, offlineUnavailableIds)
+            }
             Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -216,8 +262,8 @@ fun PlaylistScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     NmlButton(onClick = {
-                        player.playSongs(navController, pl.tracks, 0)
-                    }, enabled = pl.tracks.isNotEmpty(), modifier = Modifier.weight(1f)) {
+                        player.playSongs(navController, playableSongs, 0)
+                    }, enabled = playableSongs.isNotEmpty(), modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.PlayArrow, null)
                             Text("全部播放", style = MaterialTheme.typography.labelLarge)
@@ -241,14 +287,22 @@ fun PlaylistScreen(
                         )
                     }
                     itemsIndexed(pl.tracks, key = { _, song -> song.id }) { index, song ->
+                        val queueIndex = offlineQueueStartIndex(
+                            songs = pl.tracks,
+                            sourceIndex = index,
+                            isOnline = isOnline,
+                            unavailableIds = offlineUnavailableIds,
+                        )
                         SongListItem(
                             song = song,
                             index = index,
+                            enabled = queueIndex != null,
+                            disabledReason = offlineUnavailableLabel(isOnline, offlineUnavailableIds, song.id),
                             onMv = song.mv.takeIf { it > 0L }?.let { mvId ->
                                 { navController.navigate(Routes.mv(mvId)) }
                             },
                             onClick = {
-                                player.playSongs(navController, pl.tracks, index)
+                                queueIndex?.let { player.playSongs(navController, playableSongs, it) }
                             },
                             trailing = {
                                 IconButton(onClick = { viewModel.toggleLike(song.id) }) {

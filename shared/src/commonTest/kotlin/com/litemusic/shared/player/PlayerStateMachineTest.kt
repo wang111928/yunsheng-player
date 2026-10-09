@@ -52,13 +52,69 @@ class PlayerStateMachineTest {
     }
 
     @Test
-    fun previousRespectsPosition() = runTest {
+    fun directQueueSelectionStartsLoadingButRestoredQueueRemainsPaused() = runTest {
+        val sm = PlayerStateMachine()
+
+        sm.setQueueAndPlay(items(2), 1)
+
+        assertEquals(1, sm.state.value.currentIndex)
+        assertEquals(PlayPhase.LOADING, sm.state.value.phase)
+
+        val restored = PlayerStateMachine()
+        restored.restore(sm.snapshot())
+        assertEquals(PlayPhase.PAUSED, restored.state.value.phase)
+    }
+
+    @Test
+    fun bufferingDoesNotLookLikeAnotherDirectSelection() = runTest {
+        val sm = PlayerStateMachine()
+        sm.setQueueAndPlay(items(1))
+        val selection = sm.state.value.selectionGeneration
+
+        sm.onLoading()
+
+        assertEquals(selection, sm.state.value.selectionGeneration)
+    }
+
+    @Test
+    fun navigatingToAnAdjacentDuplicateStillCreatesANewSelection() = runTest {
+        val duplicate = QueueItem(8L, "same", "artist", quality = Quality.HIGH)
+        val sm = PlayerStateMachine().also { it.setQueue(listOf(duplicate, duplicate)) }
+        val before = sm.state.value.selectionGeneration
+
+        sm.playIndex(1)
+
+        assertEquals(before + 1L, sm.state.value.selectionGeneration)
+        assertEquals(1, sm.state.value.currentIndex)
+        assertEquals(PlayPhase.LOADING, sm.state.value.phase)
+    }
+
+    @Test
+    fun previousAlwaysMovesToThePriorQueueItemRegardlessOfPosition() = runTest {
         val sm = PlayerStateMachine()
         sm.setQueue(items(3), 1)
-        sm.updatePosition(5000L)
-        assertEquals(1, sm.previousIndex()) // 超过 3 秒回到当前曲目开头
-        sm.updatePosition(1000L)
+        sm.updatePosition(0L)
         assertEquals(0, sm.previousIndex())
+        sm.updatePosition(5000L)
+        assertEquals(0, sm.previousIndex())
+    }
+
+    @Test
+    fun previousKeepsExistingWrapAndShuffleBoundaries() = runTest {
+        val sequence = PlayerStateMachine().also { it.setQueue(items(3), 0) }
+        assertEquals(2, sequence.previousIndex())
+
+        sequence.setPlayMode(PlayMode.REPEAT_ALL)
+        assertEquals(2, sequence.previousIndex())
+
+        sequence.setPlayMode(PlayMode.REPEAT_ONE)
+        assertEquals(2, sequence.previousIndex())
+
+        val shuffled = PlayerStateMachine().also { it.setQueue(items(3), 1); it.setPlayMode(PlayMode.SHUFFLE) }
+        assertEquals(false, shuffled.previousIndex() == 1)
+
+        val single = PlayerStateMachine().also { it.setQueue(items(1), 0); it.setPlayMode(PlayMode.SHUFFLE) }
+        assertEquals(0, single.previousIndex())
     }
 
     @Test

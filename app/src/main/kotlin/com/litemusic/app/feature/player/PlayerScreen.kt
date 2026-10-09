@@ -198,6 +198,7 @@ fun PlayerScreen(
     }
 
     val playing = state.phase == PlayPhase.PLAYING
+    val playbackPending = state.phase == PlayPhase.LOADING
     val duration = state.durationMs.takeIf { it > 0 } ?: current.durationMs
     val position = state.positionMs
     val progress = playerProgressFraction(position, duration)
@@ -268,6 +269,24 @@ fun PlayerScreen(
                 IconButton(onClick = { showQueue = true }) {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, "播放队列", tint = Color.White)
                 }
+            }
+
+            // The service already maps Media3 diagnostics to short Chinese guidance.  Keep it
+            // in the player rather than hiding a failed tap behind the play button; onPlaying()
+            // clears it as soon as playback recovers.
+            (state.error?.takeIf { state.phase == PlayPhase.ERROR })?.let { message ->
+                Text(
+                    message,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xB82B1720))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                )
             }
 
             if (togetherRoom.inRoom && togetherRoom.members.isNotEmpty()) {
@@ -415,8 +434,12 @@ fun PlayerScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                     Icon(
-                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (playing) "暂停" else "播放",
+                        if (playing || playbackPending) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = when {
+                            playing -> "暂停"
+                            playbackPending -> "取消播放"
+                            else -> "播放"
+                        },
                         tint = accent,
                         modifier = Modifier.size(38.dp),
                     )

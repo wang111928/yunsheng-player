@@ -50,24 +50,35 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import coil3.compose.AsyncImage
 import com.litemusic.app.data.PlaylistRepository
 import com.litemusic.app.data.SearchRepository
 import com.litemusic.app.feature.comment.CommentSheetController
+import com.litemusic.app.feature.player.offlinePlayableQueue
+import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.app.feature.player.offlineUnavailableLabel
+import com.litemusic.app.feature.player.rememberOfflineUnavailableIds
 import com.litemusic.app.feature.player.SongActionSheet
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
 import com.litemusic.app.ui.Routes
+import com.litemusic.app.util.NetworkStatusMonitor
+import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.NmlCard
 import com.litemusic.design.components.NmlTactileSurface
 import com.litemusic.design.components.SectionHeader
 import com.litemusic.design.components.SongListItem
 import com.litemusic.design.theme.NmlTheme
+import com.litemusic.player.OfflinePlaybackAvailability
 import com.litemusic.player.PlaybackController
+import com.litemusic.shared.domain.QueueBuilder
 import com.litemusic.shared.model.Artist
 import com.litemusic.shared.model.Playlist
 import com.litemusic.shared.model.Profile
 import com.litemusic.shared.model.Song
 import com.litemusic.shared.util.AppResult
+import com.litemusic.shared.util.Quality
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
@@ -90,9 +101,28 @@ fun SearchScreen(
     val context = LocalContext.current
     val controller: PlaybackController = koinInject()
     val playlistRepository: PlaylistRepository = koinInject()
+    val settings: SettingsStore = koinInject()
+    val network: NetworkStatusMonitor = koinInject()
+    val quality by settings.quality.collectAsState(initial = Quality.EXHIGH)
+    val isOnline by network.isOnline.collectAsState()
+    val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
+    val queueBuilder = remember { QueueBuilder() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { network.refresh() }
     val scope = rememberCoroutineScope()
     var actionSong by remember { mutableStateOf<Song?>(null) }
     var selectedArtist by remember { mutableStateOf<Artist?>(null) }
+    val resultSongs = state.results?.songs.orEmpty()
+    val unavailableSongIds = rememberOfflineUnavailableIds(
+        songs = resultSongs,
+        isOnline = isOnline,
+        quality = quality,
+        cacheRevision = cacheRevision,
+        context = context,
+        queueBuilder = queueBuilder,
+    )
+    val playableSongs = remember(resultSongs, isOnline, unavailableSongIds) {
+        offlinePlayableQueue(resultSongs, isOnline, unavailableSongIds)
+    }
 
     LaunchedEffect(initialKeyword) {
         if (initialKeyword.isNotBlank()) {
@@ -116,7 +146,9 @@ fun SearchScreen(
         SongActionSheet(
             song = song,
             onDismiss = { actionSong = null },
-            onPlayNext = { player.enqueueNext(song) },
+            onPlayNext = {
+                player.enqueueNext(song) { message -> Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
+            },
             onLike = {
                 scope.launch {
                     val liked = song.id in playlistRepository.likedIds.value
@@ -174,10 +206,21 @@ fun SearchScreen(
             results != null -> ResultList(
                 bundle = results,
                 expanded = state.expanded,
+                isOnline = isOnline,
+                unavailableSongIds = unavailableSongIds,
                 onToggleSection = viewModel::toggleSection,
                 loadingMore = state.loadingMore,
                 onLoadMore = viewModel::loadMore,
-                onPlaySong = { index -> player.playSongs(navController, results.songs, index) },
+                onPlaySong = { index ->
+                    offlineQueueStartIndex(
+                        songs = results.songs,
+                        sourceIndex = index,
+                        isOnline = isOnline,
+                        unavailableIds = unavailableSongIds,
+                    )?.let { queueIndex ->
+                        player.playSongs(navController, playableSongs, queueIndex)
+                    }
+                },
                 onMoreSong = { song -> actionSong = song },
                 onOpenMv = { id -> navController.navigate(Routes.mv(id)) },
                 onOpenArtist = { artist ->
@@ -333,6 +376,8 @@ private fun RemovablePill(text: String, onClick: () -> Unit, onRemove: () -> Uni
 private fun ResultList(
     bundle: SearchRepository.SearchBundle,
     expanded: Set<SearchSection>,
+    isOnline: Boolean,
+    unavailableSongIds: Set<Long>?,
     onToggleSection: (SearchSection) -> Unit,
     loadingMore: Set<SearchSection>,
     onLoadMore: (SearchSection) -> Unit,
@@ -364,9 +409,21 @@ private fun ResultList(
                             )
                             when (section) {
                                 SearchSection.SONG -> bundle.songs.take(visible).forEachIndexed { index, song ->
+                                    val enabled = offlineQueueStartIndex(
+                                        songs = bundle.songs,
+                                        sourceIndex = index,
+                                        isOnline = isOnline,
+                                        unavailableIds = unavailableSongIds,
+                                    ) != null
                                     SongListItem(
                                         song = song,
                                         index = index,
+                                        enabled = enabled,
+                                        disabledReason = offlineUnavailableLabel(
+                                            isOnline,
+                                            unavailableSongIds,
+                                            song.id,
+                                        ),
                                         onMv = song.mv.takeIf { it > 0L }?.let { mvId ->
                                             { onOpenMv(mvId) }
                                         },

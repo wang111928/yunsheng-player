@@ -53,7 +53,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import com.litemusic.design.components.nmlPressable
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -75,7 +74,9 @@ import com.litemusic.app.feature.notes.commentStateForThread
 import com.litemusic.app.feature.notes.eventShareText
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
 import com.litemusic.app.ui.Routes
+import com.litemusic.app.ui.artSkinDrawable
 import com.litemusic.design.components.LoadingView
+import com.litemusic.design.theme.LocalNmlThemeKind
 import com.litemusic.shared.api.EventPost
 import com.litemusic.shared.model.Playlist
 import com.litemusic.shared.model.Comment
@@ -898,6 +899,7 @@ fun UserProfileScreen(
         return
     }
 
+    val useArtSkin = artSkinDrawable(LocalNmlThemeKind.current) != null
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             state = profileListState,
@@ -910,7 +912,9 @@ fun UserProfileScreen(
             } }
             item {
                 Box(Modifier.fillMaxWidth().height(64.dp)) {
-                    if (state.backgroundUrl.isNotBlank()) {
+                    // The shared page artwork already runs behind this header. A remote cover
+                    // plus its opaque gradient used to replace it with a blue strip.
+                    if (!useArtSkin && state.backgroundUrl.isNotBlank()) {
                         AsyncImage(
                             model = state.backgroundUrl,
                             contentDescription = null,
@@ -918,16 +922,18 @@ fun UserProfileScreen(
                             modifier = Modifier.matchParentSize(),
                         )
                     }
-                    Box(
-                        Modifier.matchParentSize().background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.62f),
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0.9f),
+                    if (!useArtSkin) {
+                        Box(
+                            Modifier.matchParentSize().background(
+                                androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.62f),
+                                        MaterialTheme.colorScheme.background.copy(alpha = 0.9f),
+                                    ),
                                 ),
                             ),
-                        ),
-                    )
+                        )
+                    }
                     IconButton(
                         onClick = { navController.popBackStack() },
                         modifier = Modifier.padding(start = 12.dp, top = 12.dp),
@@ -1156,7 +1162,9 @@ fun UserProfileScreen(
                         onOpen = { navController.navigate(Routes.playlist(playlist.id)) },
                         onPlay = {
                             when (profilePlaylistAction(playlist)) {
-                                ProfilePlaylistAction.PLAY_LOADED_TRACKS -> player.playSongs(navController, playlist.tracks, 0)
+                                ProfilePlaylistAction.PLAY_LOADED_TRACKS -> player.playSongs(
+                                    navController, playlist.tracks, allowOfflineStartFallback = true,
+                                )
                                 ProfilePlaylistAction.OPEN_DETAIL -> navController.navigate(Routes.playlist(playlist.id))
                             }
                         },

@@ -3,6 +3,9 @@ package com.litemusic.app.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.litemusic.app.data.AuthRepository
+import com.litemusic.app.feature.update.AvailableUpdate
+import com.litemusic.app.feature.update.GithubUpdateRepository
+import com.litemusic.app.feature.update.UpdateCheckResult
 import com.litemusic.data.auth.CredentialBackup
 import com.litemusic.data.cache.ContentCache
 import com.litemusic.data.prefs.SettingsStore
@@ -14,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import java.io.File
 
 class SettingsViewModel(
@@ -21,6 +25,7 @@ class SettingsViewModel(
     private val cache: ContentCache,
     private val auth: AuthRepository,
     private val credentialBackup: CredentialBackup,
+    private val updater: GithubUpdateRepository,
 ) : ViewModel() {
 
     data class UiState(
@@ -34,23 +39,39 @@ class SettingsViewModel(
         val cacheUsed: Long = 0,
         val songCheckin: Boolean = false,
         val toast: String? = null,
+        val checkingUpdate: Boolean = false,
+        val downloadingUpdate: Boolean = false,
+        val update: AvailableUpdate? = null,
+        val downloadedUpdate: File? = null,
+        val downloadedBytes: Long = 0,
+        val totalUpdateBytes: Long? = null,
+        val updateError: String? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+    private var downloadJob: Job? = null
 
     suspend fun load() {
-        _state.value = UiState(
+        val quality = settings.quality.first()
+        val autoDegrade = settings.autoDegrade.first()
+        val theme = canonicalNmlThemeKind(settings.theme.first())
+        val glassBlur = settings.glassBlur.first()
+        val lock60Hz = settings.lock60Hz.first()
+        val minLocalSec = settings.minLocalSec.first()
+        val cacheUsed = cache.currentDiskSize()
+        val songCheckin = settings.songCheckin.first()
+        _state.update { old -> old.copy(
             loaded = true,
-            quality = settings.quality.first(),
-            autoDegrade = settings.autoDegrade.first(),
-            theme = canonicalNmlThemeKind(settings.theme.first()),
-            glassBlur = settings.glassBlur.first(),
-            lock60Hz = settings.lock60Hz.first(),
-            minLocalSec = settings.minLocalSec.first(),
-            cacheUsed = cache.currentDiskSize(),
-            songCheckin = settings.songCheckin.first(),
-        )
+            quality = quality,
+            autoDegrade = autoDegrade,
+            theme = theme,
+            glassBlur = glassBlur,
+            lock60Hz = lock60Hz,
+            minLocalSec = minLocalSec,
+            cacheUsed = cacheUsed,
+            songCheckin = songCheckin,
+        ) }
     }
 
     fun setQuality(q: Quality) = viewModelScope.launch {
@@ -91,7 +112,7 @@ class SettingsViewModel(
 
     fun clearCache() = viewModelScope.launch {
         cache.clear()
-        _state.update { it.copy(cacheUsed = 0, toast = "缓存已清理") }
+        _state.update { it.copy(cacheUsed = 0, toast = "内容缓存已清理") }
     }
 
     /** 凭证导出（AES-256-GCM 加密文件，FuoEvolve 优点） */
@@ -108,6 +129,40 @@ class SettingsViewModel(
     fun logout(onDone: () -> Unit) = viewModelScope.launch {
         auth.logout()
         onDone()
+    }
+
+    fun checkForUpdate(currentVersionCode: Long) {
+        if (_state.value.checkingUpdate || _state.value.downloadingUpdate) return
+        viewModelScope.launch {
+            _state.update { it.copy(checkingUpdate = true, update = null, updateError = null) }
+            when (val result = updater.check(currentVersionCode)) {
+                is UpdateCheckResult.Available -> _state.update { it.copy(checkingUpdate = false, update = result.update) }
+                UpdateCheckResult.UpToDate -> _state.update { it.copy(checkingUpdate = false, toast = "已是最新版本" ) }
+                UpdateCheckResult.LocalVersionNewer -> _state.update { it.copy(checkingUpdate = false, toast = "当前本机版本高于 GitHub 已发布版本" ) }
+                is UpdateCheckResult.Failed -> _state.update { it.copy(checkingUpdate = false, updateError = result.reason) }
+            }
+        }
+    }
+
+    fun downloadUpdate() {
+        val update = _state.value.update ?: return
+        if (_state.value.downloadingUpdate || downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch {
+            _state.update { it.copy(downloadingUpdate = true, downloadedBytes = 0, totalUpdateBytes = update.asset.size) }
+            updater.download(update) { downloaded, total ->
+                _state.update { it.copy(downloadedBytes = downloaded, totalUpdateBytes = total) }
+            }.onSuccess { file ->
+                _state.update { it.copy(downloadingUpdate = false, downloadedUpdate = file, toast = "更新已下载，可安装") }
+            }.onFailure { error ->
+                if (error !is kotlinx.coroutines.CancellationException) _state.update { it.copy(downloadingUpdate = false, toast = "下载更新失败，请检查网络或存储空间后重试") }
+            }
+        }
+    }
+
+    fun showToast(message: String) = _state.update { it.copy(toast = message) }
+
+    fun discardMissingUpdate() = _state.update {
+        it.copy(downloadedUpdate = null, downloadedBytes = 0, toast = "更新文件已失效，请重新下载")
     }
 
     fun toastShown() = _state.update { it.copy(toast = null) }

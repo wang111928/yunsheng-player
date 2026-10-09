@@ -104,6 +104,7 @@ private fun StartupSkin(theme: String) {
 internal fun SystemBarAppearance(
     darkIcons: Boolean,
     transparentPlayerBars: Boolean = false,
+    transparentStatusBar: Boolean = false,
     statusBarColorOverride: Int? = null,
 ) {
     val view = LocalView.current
@@ -116,9 +117,12 @@ internal fun SystemBarAppearance(
                 window.statusBarColor = AndroidColor.TRANSPARENT
                 window.navigationBarColor = AndroidColor.TRANSPARENT
             } else {
-                // A transparent bar above Scaffold's safe inset exposes the system contrast
-                // scrim on some Android 15/16 devices, which appeared as a blank white strip.
-                window.statusBarColor = opaqueStatusBarColor
+                // Artwork is drawn by MainNavHost before Scaffold applies its safe drawing
+                // padding, so the status area can share the same image without a solid seam.
+                // Other pages keep their opaque color: some Android 15/16 devices add a
+                // contrast scrim above a transparent safe inset, which otherwise reads as a
+                // blank strip.
+                window.statusBarColor = if (transparentStatusBar) AndroidColor.TRANSPARENT else opaqueStatusBarColor
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 window.isStatusBarContrastEnforced = false

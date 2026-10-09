@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,6 +88,7 @@ import com.litemusic.design.components.nmlPressable
 import com.litemusic.app.data.TogetherRepository
 import com.litemusic.player.PlaybackController
 import com.litemusic.shared.player.PlayPhase
+import com.litemusic.design.theme.LocalNmlThemeKind
 import org.koin.compose.koinInject
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -204,12 +206,30 @@ fun MainNavHost(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit 
     val togetherRepository: TogetherRepository = koinInject()
     val backStack by navController.currentBackStackEntryAsState()
     val currentDestination = backStack?.destination
+    val route = currentDestination?.route
+    val isFullscreenPlayer = route == Routes.PLAYER_DESTINATION || route == Routes.MV
+    // Draw an art skin once for the whole activity, before Scaffold consumes the status-bar
+    // inset. Drawing it only inside Scaffold starts the crop below the status bar and leaves a
+    // conspicuous solid-colour strip above it.
+    // DailyScreen owns an opaque DailyInk backdrop. It deliberately starts below the safe
+    // drawing inset, so letting an art skin reach the status bar would create a second seam.
+    // Keep its established deep-blue status bar until that screen is made edge-to-edge itself.
+    val useFullWindowArtSkin = !isFullscreenPlayer && route != Routes.DAILY &&
+        artSkinDrawable(LocalNmlThemeKind.current) != null
+    val scaffoldContainerColor = when {
+        useFullWindowArtSkin -> Color.Transparent
+        isFullscreenPlayer -> Color(0xFF0B1018)
+        route == Routes.DAILY -> Color(0xFF111216)
+        else -> MaterialTheme.colorScheme.background
+    }
     SystemBarAppearance(
         darkIcons = MaterialTheme.colorScheme.background.luminance() > 0.5f &&
-            currentDestination?.route != Routes.PLAYER_DESTINATION && currentDestination?.route != Routes.MV &&
-            currentDestination?.route != Routes.DAILY,
-        transparentPlayerBars = currentDestination?.route == Routes.PLAYER_DESTINATION || currentDestination?.route == Routes.MV,
-        statusBarColorOverride = if (currentDestination?.route == Routes.DAILY) android.graphics.Color.rgb(27, 49, 94) else null,
+            !isFullscreenPlayer && route != Routes.DAILY,
+        transparentPlayerBars = isFullscreenPlayer,
+        transparentStatusBar = useFullWindowArtSkin,
+        // Daily retains its deliberate deep-blue status bar for colour-only themes. Art themes
+        // bypass the override so the image remains continuous through the status area.
+        statusBarColorOverride = if (route == Routes.DAILY && !useFullWindowArtSkin) android.graphics.Color.rgb(27, 49, 94) else null,
     )
     LaunchedEffect(playerEntry) {
         playerEntry?.let { lyrics ->
@@ -248,40 +268,51 @@ fun MainNavHost(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit 
     val showBottomBar = tabs.any { tab ->
         currentDestination?.hierarchy?.any { it.route == tab.route } == true
     }
+    val showMiniPlayer = hasTrack && route != null && !isFullscreenPlayer
 
-    Scaffold(
-        contentWindowInsets = if (currentDestination?.route == Routes.PLAYER_DESTINATION || currentDestination?.route == Routes.MV) WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom) else WindowInsets.safeDrawing,
-        containerColor = when (currentDestination?.route) {
-            Routes.PLAYER_DESTINATION, Routes.MV -> Color(0xFF0B1018)
-            Routes.DAILY -> Color(0xFF111216)
-            else -> MaterialTheme.colorScheme.background
-        },
-        bottomBar = {
-            if (showBottomBar) {
-                Column {
-                    if (hasTrack) {
-                        LiveMiniPlayer(
-                            controller = controller,
-                            togetherRepository = togetherRepository,
-                            onClick = { navController.navigate(Routes.PLAYER) },
-                            onToggle = { controller.toggle() },
-                            onQueue = { showQueue = true },
-                        )
+    Box(
+        Modifier
+            .fillMaxSize()
+            .then(if (useFullWindowArtSkin) Modifier.nmlPageBackground() else Modifier),
+    ) {
+        Scaffold(
+            contentWindowInsets = if (isFullscreenPlayer) WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom) else WindowInsets.safeDrawing,
+            containerColor = scaffoldContainerColor,
+            // Transparent art pages otherwise inherit a black default content colour from
+            // Scaffold, leaving labels unreadable over dark paintings.
+            contentColor = if (useFullWindowArtSkin) MaterialTheme.colorScheme.onSurface
+                else contentColorFor(scaffoldContainerColor),
+            bottomBar = {
+                if (showMiniPlayer || showBottomBar) {
+                    Column {
+                        if (showMiniPlayer) {
+                            LiveMiniPlayer(
+                                controller = controller,
+                                togetherRepository = togetherRepository,
+                                onClick = { navController.navigate(Routes.PLAYER) },
+                                onToggle = { controller.toggle() },
+                                onQueue = { showQueue = true },
+                            )
+                        }
+                        if (showBottomBar) {
+                            FloatingBottomBar(
+                                tabs = tabs,
+                                currentDestination = currentDestination,
+                                onClick = { tab ->
+                                    navController.navigateToBottomTab(tab.route)
+                                },
+                            )
+                        }
                     }
-                FloatingBottomBar(
-                    tabs = tabs,
-                    currentDestination = currentDestination,
-                    onClick = { tab ->
-                        navController.navigateToBottomTab(tab.route)
-                    },
-                )
                 }
-            }
-        },
-    ) { padding ->
-        Box(
-            Modifier.fillMaxSize().padding(padding).nmlPageBackground(),
-        ) {
+            },
+        ) { padding ->
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .then(if (useFullWindowArtSkin) Modifier else Modifier.nmlPageBackground()),
+            ) {
             NavHost(
                 navController = navController,
                 startDestination = Routes.HOME,
@@ -380,6 +411,7 @@ fun MainNavHost(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit 
                     onRemove = controller::removeAt,
                     onMove = controller::move,
                 )
+            }
             }
         }
     }

@@ -18,6 +18,7 @@ import com.litemusic.app.feature.playlist.importing.ExternalPlaylistReader
 import com.litemusic.app.feature.playlist.importing.PublicPlaylistReader
 import com.litemusic.app.feature.search.SearchViewModel
 import com.litemusic.app.feature.settings.SettingsViewModel
+import com.litemusic.app.feature.update.GithubUpdateRepository
 import com.litemusic.app.feature.signin.SigninViewModel
 import com.litemusic.app.feature.social.SocialViewModel
 import com.litemusic.app.feature.together.TogetherViewModel
@@ -34,6 +35,8 @@ import com.litemusic.shared.api.ApiClient
 import com.litemusic.shared.api.NMApi
 import kotlinx.coroutines.flow.map
 import org.koin.core.module.dsl.viewModelOf
+import org.koin.android.ext.koin.androidContext
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
 val appModule = module {
@@ -44,6 +47,9 @@ val appModule = module {
 val networkModule = module {
     single { NetworkEngine(PersistentCookieJar(get<CookieStore>()), BuildConfig.DEBUG) }
     single { get<NetworkEngine>().okHttpClient() }
+    single(named("githubUpdateClient")) {
+        get<NetworkEngine>().okHttpClientNoCookies().newBuilder().followSslRedirects(false).build()
+    }
     single {
         ApiClient(
             // 必须使用「无 cookieJar」的 OkHttp：否则 BridgeInterceptor 会覆盖显式 Cookie 头，
@@ -57,6 +63,7 @@ val networkModule = module {
 }
 
 val repositoriesModule = module {
+    single { GithubUpdateRepository(androidContext(), get(named("githubUpdateClient"))) }
     single { AuthRepository(get(), get(), get()) }
     single { HomeRepository(get(), get(), get(), get(), get()) }
     single { SearchRepository(get(), get()) }
