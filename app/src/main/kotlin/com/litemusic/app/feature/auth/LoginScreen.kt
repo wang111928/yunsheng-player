@@ -33,6 +33,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.lifecycle.Lifecycle
@@ -67,6 +71,28 @@ fun LoginScreen(viewModel: LoginViewModel = koinViewModel()) {
     val loginError by viewModel.toast.collectAsState()
     val scope = rememberCoroutineScope()
     var officialQrReload by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    var nativeEnabled by remember { mutableStateOf(qqNativeHandoffEnabled(context)) }
+    var loginRoute by remember { mutableStateOf(if (nativeEnabled) LoginWebAuthRoute.QQ_OAUTH else LoginWebAuthRoute.OFFICIAL_QR) }
+    var showNativeHelp by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        val allowed = qqNativeHandoffEnabled(context)
+        if (allowed != nativeEnabled) {
+            nativeEnabled = allowed
+            loginRoute = if (allowed) LoginWebAuthRoute.QQ_OAUTH else LoginWebAuthRoute.OFFICIAL_QR
+            officialQrReload += 1
+        }
+    }
+    if (showNativeHelp) AlertDialog(
+        onDismissRequest = { showNativeHelp = false },
+        title = { Text("QQ 免截图授权") },
+        text = { Text("在系统的“打开链接”中，允许云声打开 ssl.ptlogin2.qq.com，然后返回本页，从官网的其他登录方式选择 QQ 并确认授权。只有开启此链接后才能尝试直接返回云声。手机号、邮箱和官网扫码仍可正常使用。") },
+        confirmButton = { TextButton(onClick = {
+            showNativeHelp = false
+            openAuthLinkSettings(context)
+        }) { Text("打开链接设置") } },
+        dismissButton = { TextButton(onClick = { showNativeHelp = false }) { Text("稍后") } },
+    )
 
     SystemBarAppearance(darkIcons = MaterialTheme.colorScheme.background.luminance() > 0.5f)
 
@@ -86,14 +112,18 @@ fun LoginScreen(viewModel: LoginViewModel = koinViewModel()) {
                         // A failed cookie validation is cached by LoginViewModel.  Clear that
                         // attempt before deliberately returning to the official QR entry.
                         viewModel.retryWebLogin()
+                        loginRoute = LoginWebAuthRoute.OFFICIAL_QR
                         officialQrReload += 1
                     }, modifier = Modifier.fillMaxWidth()) { Text("官方扫码") }
+                }
+                TextButton(onClick = { if (nativeEnabled) { loginRoute = LoginWebAuthRoute.QQ_OAUTH; officialQrReload += 1 } else showNativeHelp = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Text(if (nativeEnabled) "使用 QQ 直接授权" else "启用 QQ 免截图授权")
                 }
                 loginError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
             }
             WebView(
                 modifier = Modifier.weight(1f),
-                loginRoute = LoginWebAuthRoute.OFFICIAL_QR,
+                loginRoute = loginRoute,
                 officialQrReload = officialQrReload,
                 onRetry = viewModel::retryWebLogin,
                 onCookies = { cookies ->
@@ -167,7 +197,7 @@ private fun WebView(
                         },
                     )
                     if (lifecycleScript != null) qqLifecycleScriptHandlers[this] = lifecycleScript
-                    if (BuildConfig.AUTH_HANDOFF_EXPERIMENT) {
+                    if (qqNativeHandoffEnabled(ctx)) {
                         QqNativeHandoffBridge.install(this) { providerUri ->
                             tryQqHandoff(this, providerUri) { errorMessage = it }
                         }
@@ -301,7 +331,7 @@ private fun loginWebViewClient(
         }
         if (uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) {
             val normalizedUrl = if (mainFrame) {
-                normalizedQqWebLoginUrl(url, allowNativeHandoff = BuildConfig.AUTH_HANDOFF_EXPERIMENT)
+                normalizedQqWebLoginUrl(url, allowNativeHandoff = qqNativeHandoffEnabled(view.context))
             } else url
             if (normalizedUrl != url) {
                 view.loadUrl(normalizedUrl)
@@ -401,7 +431,7 @@ private class LoginWebChromeClient(
         val lifecycleScript = popup.configureLoginWebView(
             userAgent = popupLoginUserAgent(
                 view.settings.userAgentString ?: OFFICIAL_QR_USER_AGENT,
-                authHandoffExperiment = BuildConfig.AUTH_HANDOFF_EXPERIMENT,
+                authHandoffExperiment = qqNativeHandoffEnabled(view.context),
             ),
             openOtherLoginOptions = false,
             onCookies = onCookies,
@@ -413,7 +443,7 @@ private class LoginWebChromeClient(
             },
         )
         if (lifecycleScript != null) qqLifecycleScriptHandlers[popup] = lifecycleScript
-        if (BuildConfig.AUTH_HANDOFF_EXPERIMENT) {
+        if (qqNativeHandoffEnabled(view.context)) {
             QqNativeHandoffBridge.install(popup) { providerUri ->
                 tryQqHandoff(popup, providerUri, onPageError)
             }

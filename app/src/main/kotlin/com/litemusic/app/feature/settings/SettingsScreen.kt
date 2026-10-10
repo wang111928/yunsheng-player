@@ -110,7 +110,7 @@ fun SettingsScreen(
     if (showUpdateErrorDialog && state.updateError != null) {
         AlertDialog(
             onDismissRequest = { showUpdateErrorDialog = false },
-            title = { Text("检查更新失败") },
+            title = { Text("更新未完成") },
             text = { Text(state.updateError!!) },
             confirmButton = { TextButton(onClick = { showUpdateErrorDialog = false; viewModel.checkForUpdate(BuildConfig.VERSION_CODE.toLong()) }) { Text("重试") } },
             dismissButton = {
@@ -152,7 +152,12 @@ fun SettingsScreen(
                     Text(if (state.downloadedUpdate != null) "安装更新" else if (state.downloadingUpdate) "下载中" else "下载更新")
                 }
             },
-            dismissButton = { TextButton(onClick = { showUpdateDialog = false }) { Text("稍后") } },
+            dismissButton = {
+                Row {
+                    if (state.downloadingUpdate) TextButton(onClick = viewModel::cancelUpdateDownload) { Text("停止下载") }
+                    TextButton(onClick = { showUpdateDialog = false }) { Text("稍后") }
+                }
+            },
         )
     }
 
@@ -219,6 +224,14 @@ fun SettingsScreen(
                         Text("主题颜色", style = MaterialTheme.typography.bodyLarge)
                         Text("立即预览，重启后仍会保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         ThemePicker(selected = state.theme, onSelect = viewModel::setTheme)
+                        MenuLine(
+                            title = "背景层次",
+                            subtitle = "淡雅更易阅读，浓郁保留更多画面细节",
+                            currentLabel = listOf("淡雅", "均衡", "浓郁")[state.backgroundStrength],
+                            items = listOf("淡雅" to 0, "均衡" to 1, "浓郁" to 2),
+                            current = state.backgroundStrength,
+                            onPick = viewModel::setBackgroundStrength,
+                        )
                         GroupDivider()
                         SwitchLine("播放页毛玻璃", "在播放页使用柔和背景效果", state.glassBlur, viewModel::setGlassBlur)
                     }
@@ -244,12 +257,17 @@ fun SettingsScreen(
                         Row(Modifier.fillMaxWidth().padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("内容缓存空间", style = MaterialTheme.typography.bodyLarge)
-                                Text("包括封面和歌词，不含歌曲音频缓存", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("包括封面、歌词和临时页面数据", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Text(formatSize(state.cacheUsed), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         GroupDivider()
-                        ActionLine("清理内容缓存", "只清理封面和歌词；音频缓存不设上限且不会自动淘汰", "清理  ›", onClick = viewModel::clearCache)
+                        state.audioCache?.let { audio ->
+                            Text("歌曲音频 ${formatSize(audio.bytes)}", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 12.dp))
+                            Text("完整缓存 ${audio.completeSongIds.size} 首 · 缓冲中 ${audio.partialSongIds.size} 首\n设备可用 ${formatSize(audio.freeBytes)} · 不设容量上限，不自动淘汰", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 12.dp))
+                            GroupDivider()
+                        }
+                        ActionLine("清理内容缓存", "保留离线歌单目录和歌曲音频；音频不设上限且不会自动淘汰", "清理  ›", onClick = viewModel::clearCache)
                     }
                 }
 

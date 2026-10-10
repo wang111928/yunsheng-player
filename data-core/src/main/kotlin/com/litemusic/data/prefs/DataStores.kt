@@ -24,6 +24,7 @@ class SettingsStore(private val context: Context) {
         val AUTO_DEGRADE = booleanPreferencesKey("auto_degrade")
         val THEME = stringPreferencesKey("theme")
         val GLASS_BLUR = booleanPreferencesKey("glass_blur")
+        val BACKGROUND_STRENGTH = intPreferencesKey("background_strength")
         val LOCK_60HZ = booleanPreferencesKey("lock_60hz")
         val MIN_LOCAL_SEC = intPreferencesKey("min_local_sec")
         val CACHE_LIMIT_MB = intPreferencesKey("cache_limit_mb")
@@ -49,6 +50,7 @@ class SettingsStore(private val context: Context) {
         }
     }
     val glassBlur: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.GLASS_BLUR] ?: true }
+    val backgroundStrength: Flow<Int> = context.settingsDataStore.data.map { (it[Keys.BACKGROUND_STRENGTH] ?: 1).coerceIn(0, 2) }
     val lock60Hz: Flow<Boolean> = context.settingsDataStore.data.map { it[Keys.LOCK_60HZ] ?: false }
     val minLocalSec: Flow<Int> = context.settingsDataStore.data.map { it[Keys.MIN_LOCAL_SEC] ?: 30 }
     val cacheLimitMb: Flow<Int> = context.settingsDataStore.data.map { it[Keys.CACHE_LIMIT_MB] ?: 256 }
@@ -69,6 +71,7 @@ class SettingsStore(private val context: Context) {
         StartupThemePreferences.mirror(context, v)
     }
     suspend fun setGlassBlur(v: Boolean) = context.settingsDataStore.edit { it[Keys.GLASS_BLUR] = v }
+    suspend fun setBackgroundStrength(v: Int) = context.settingsDataStore.edit { it[Keys.BACKGROUND_STRENGTH] = v.coerceIn(0, 2) }
     suspend fun setLock60Hz(v: Boolean) = context.settingsDataStore.edit { it[Keys.LOCK_60HZ] = v }
     suspend fun setMinLocalSec(v: Int) = context.settingsDataStore.edit { it[Keys.MIN_LOCAL_SEC] = v }
     suspend fun setCacheLimitMb(v: Int) = context.settingsDataStore.edit { it[Keys.CACHE_LIMIT_MB] = v }

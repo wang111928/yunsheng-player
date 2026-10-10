@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -32,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,7 +63,7 @@ fun PlaylistImportScreen(
     val state by viewModel.state.collectAsState()
     val pendingText by PlaylistImportRequestStore.pendingText.collectAsState()
     val context = LocalContext.current
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
     var destinationMenu by remember { mutableStateOf(false) }
     var readingFile by remember { mutableStateOf(false) }
     var imageTextReady by remember { mutableStateOf(false) }
@@ -70,6 +72,16 @@ fun PlaylistImportScreen(
     var readJob by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
     BackHandler(enabled = state.importing) { viewModel.cancelImport() }
+    LaunchedEffect(state.result) {
+        if (state.result?.startsWith("已恢复") == true) {
+            tab = when {
+                state.queries.any { it.fromScreenshot } -> 2
+                extractedImportUrl(state.input) != null || officialPlaylistId(state.input) != null -> 0
+                else -> 1
+            }
+            imageTextReady = tab == 2 && state.queries.isNotEmpty()
+        }
+    }
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         if (readingFile || state.importing) return@rememberLauncherForActivityResult
@@ -185,7 +197,7 @@ fun PlaylistImportScreen(
             state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
             if (state.matches.isNotEmpty()) {
                 item {
-                    ImportPreviewHeader(state.matches, state.selectedSongIds, state.sourceTotalCount)
+                    ImportPreviewHeader(state.matches, state.selectedSongIds, state.sourceTotalCount, state.sourceReadCompleteness)
                     val missing = (minOf(state.sourceTotalCount, MAX_IMPORT_SONGS) - state.matches.size).coerceAtLeast(0)
                     if (missing > 0) Text(
                         "有 $missing 首歌曲详情暂未读取到。可重试，或仅导入当前已读取的歌曲。",
@@ -230,7 +242,7 @@ fun PlaylistImportScreen(
                         Card(Modifier.fillMaxWidth().padding(top = 8.dp).clickable(enabled = !state.importing && !readingFile) { destinationMenu = true }) {
                             Column(Modifier.padding(14.dp)) {
                                 val selected = state.destinationPlaylists.firstOrNull { it.id == state.selectedDestinationId }
-                                Text(selected?.name ?: "新建歌单：${state.newPlaylistName}")
+                                Text(selected?.name ?: state.selectedDestinationId?.let { "已选歌单（$it）" } ?: "新建歌单：${state.newPlaylistName}")
                                 Text("点击选择已有歌单，或保留新建", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -245,6 +257,10 @@ fun PlaylistImportScreen(
                             }
                         }
                     }
+                    TextButton(onClick = viewModel::loadDestinations, enabled = !state.loadingDestinations && !state.importing) {
+                        Text(if (state.loadingDestinations) "正在读取歌单…" else "刷新已有歌单")
+                    }
+                    state.destinationError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     if (state.selectedDestinationId == null) {
                         OutlinedTextField(
                             value = state.newPlaylistName,
@@ -336,9 +352,14 @@ fun PlaylistImportScreen(
     }
 }
 
-@Composable private fun ImportPreviewHeader(matches: List<ImportedSongMatch>, selected: Set<Long>, sourceTotal: Int) {
+@Composable private fun ImportPreviewHeader(matches: List<ImportedSongMatch>, selected: Set<Long>, sourceTotal: Int, completeness: ExternalPlaylistReadCompleteness) {
     Text("导入预览", style = MaterialTheme.typography.titleMedium)
-    Text(if (sourceTotal > 0) "来源 $sourceTotal 首 · 当前候选 ${matches.size} 条" else "候选 ${matches.size} 条", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+    val readStatus = when (completeness) {
+        ExternalPlaylistReadCompleteness.COMPLETE -> "已完整读取"
+        ExternalPlaylistReadCompleteness.INCOMPLETE -> "读取不完整"
+        ExternalPlaylistReadCompleteness.UNKNOWN -> "读取完整性未知"
+    }
+    Text(if (sourceTotal > 0) "来源 $sourceTotal 首 · 已读取 ${matches.size} 条 · $readStatus" else "候选 ${matches.size} 条 · $readStatus", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
     val matched = matches.mapNotNull { it.song?.id?.takeIf { id -> id > 0L } }.distinct().size
     Text("成功匹配 $matched 首 · 已选 ${selected.size} 首", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
     val pending = matches.count { !it.selectedByDefault && !it.searchIncomplete }

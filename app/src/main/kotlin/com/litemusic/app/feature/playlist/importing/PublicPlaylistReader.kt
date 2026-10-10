@@ -41,6 +41,9 @@ private fun JsonElement?.stringValue(): String = (this as? JsonPrimitive)?.conte
 private fun JsonObject.firstText(vararg keys: String): String = keys.firstNotNullOfOrNull { key ->
     this[key].stringValue().trim().takeIf { it.isNotBlank() }
 }.orEmpty()
+private fun JsonObject.firstCount(vararg keys: String): Int? = keys.firstNotNullOfOrNull { key ->
+    this[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.takeIf { it >= 0 }
+}
 private fun JsonElement?.artistText(): String = when (this) {
     is JsonArray -> map { it.artistText() }.filter { it.isNotBlank() }.joinToString(" / ")
     is JsonObject -> firstText("name", "title")
@@ -56,7 +59,20 @@ internal fun parseQqPlaylistMetadata(raw: String): ExternalPlaylistSource? = run
         val name = obj.firstText("songname", "title", "name")
         name.takeIf { it.isNotBlank() }?.let { ImportedSongQuery(it, obj["singer"].artistText()) }
     }.distinctBy { it.title.lowercase() to it.artist.lowercase() }
-    songs.takeIf { it.isNotEmpty() }?.let { ExternalPlaylistSource("QQ音乐", list.firstText("dissname", "name"), it) }
+    songs.takeIf { it.isNotEmpty() }?.let {
+        val declaredCount = list.firstCount("songnum", "songNum", "song_count", "songCount")
+        ExternalPlaylistSource(
+            sourceLabel = "QQ音乐",
+            title = list.firstText("dissname", "name"),
+            songs = it,
+            totalCount = declaredCount ?: it.size,
+            readCompleteness = when {
+                declaredCount == null -> ExternalPlaylistReadCompleteness.UNKNOWN
+                declaredCount == it.size -> ExternalPlaylistReadCompleteness.COMPLETE
+                else -> ExternalPlaylistReadCompleteness.INCOMPLETE
+            },
+        )
+    }
 }.getOrNull()
 
 /** Only actual MusicPlaylist track metadata is accepted, never a page title or login screen. */
@@ -85,7 +101,18 @@ internal fun parseMusicPlaylistJsonLd(raw: String): ExternalPlaylistSource? {
             val name = item.firstText("name", "title")
             name.takeIf { it.isNotBlank() }?.let { ImportedSongQuery(it, (item["byArtist"] ?: item["artist"]).artistText()) }
         }.distinctBy { it.title.lowercase() to it.artist.lowercase() }
-        if (songs.isNotEmpty()) return ExternalPlaylistSource("公开歌单", playlist.firstText("name"), songs)
+        if (songs.isNotEmpty()) {
+            val declaredCount = playlist.firstCount("numTracks", "numberOfItems")
+            return ExternalPlaylistSource(
+                sourceLabel = "公开歌单", title = playlist.firstText("name"), songs = songs,
+                totalCount = declaredCount ?: songs.size,
+                readCompleteness = when {
+                    declaredCount == null -> ExternalPlaylistReadCompleteness.UNKNOWN
+                    declaredCount == songs.size -> ExternalPlaylistReadCompleteness.COMPLETE
+                    else -> ExternalPlaylistReadCompleteness.INCOMPLETE
+                },
+            )
+        }
     }
     return null
 }
@@ -108,9 +135,13 @@ class PublicPlaylistReader(private val playlists: PlaylistRepository) : External
                 officialPlaylistId(current.toString())?.let { id ->
                     return@withContext when (val result = playlists.previewForImport(id, MAX_IMPORT_SONGS)) {
                         is AppResult.Failure -> result
-                        is AppResult.Success -> AppResult.Success(ExternalPlaylistSource("网易云音乐", result.data.name,
-                            result.data.tracks.map { ImportedSongQuery(it.name, it.artistNames) },
-                            maxOf(result.data.trackCount, result.data.trackIds.size, result.data.tracks.size)))
+                        is AppResult.Success -> {
+                            val total = maxOf(result.data.trackCount, result.data.trackIds.size, result.data.tracks.size)
+                            AppResult.Success(ExternalPlaylistSource("网易云音乐", result.data.name,
+                                result.data.tracks.map { ImportedSongQuery(it.name, it.artistNames) }, total,
+                                if (result.data.tracks.size >= total) ExternalPlaylistReadCompleteness.COMPLETE
+                                else ExternalPlaylistReadCompleteness.INCOMPLETE))
+                        }
                     }
                 }
                 val reference = publicPlaylistReference(current.toString())

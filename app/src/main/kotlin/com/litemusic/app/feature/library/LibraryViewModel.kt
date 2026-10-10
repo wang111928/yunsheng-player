@@ -22,6 +22,9 @@ import kotlin.coroutines.EmptyCoroutineContext
 internal fun nonBlankOrCurrent(incoming: String?, current: String): String =
     incoming?.takeIf { it.isNotBlank() } ?: current
 
+internal fun offlinePlaylistDirectory(playlists: List<Playlist>, savedIds: Set<Long>): List<Playlist> =
+    playlists.filter { it.id in savedIds }
+
 class LibraryViewModel(
     private val auth: AuthRepository,
     private val playlists: PlaylistRepository,
@@ -37,6 +40,7 @@ class LibraryViewModel(
         val level: Int = 0,
         val signature: String = "",
         val membership: String = "会员资料待确认",
+        val offlinePlaylistIds: Set<Long> = emptySet(),
         val loading: Boolean = true,
         val error: String? = null,
     )
@@ -71,8 +75,17 @@ class LibraryViewModel(
             return
         }
         val expected = auth.currentSession()
+        val savedCatalog = (playlists.offlineCatalog() as? AppResult.Success)?.data
+        if (savedCatalog != null) {
+            val savedIds = playlists.savedPlaylistIds(uid)
+            _state.update { current ->
+                if (current.session?.userId != uid || !current.session.sameLoginAs(expected)) current
+                else current.copy(myPlaylists = savedCatalog, offlinePlaylistIds = savedIds)
+            }
+        }
         val profileRefresh = auth.refreshProfile()
         val listR = playlists.myPlaylists()
+        val offlinePlaylistIds = playlists.savedPlaylistIds(uid)
         val likedR = playlists.loadLikedIds(force = true)
         val membershipR = auth.membership(uid)
         val detailR = social.userDetail(uid)
@@ -89,6 +102,7 @@ class LibraryViewModel(
                     current.membership,
                 ),
                 myPlaylists = if (listR is AppResult.Success) listR.data else current.myPlaylists,
+                offlinePlaylistIds = offlinePlaylistIds,
                 likedCount = likedR.size,
                 follows = profile?.follows?.toInt() ?: current.follows,
                 followeds = profile?.followeds?.toInt() ?: current.followeds,

@@ -67,22 +67,13 @@
             </intent-filter>
         </activity>
 
-        <!-- Enabled only by the isolated authprobe build. The stable app cannot claim this URI. -->
+        <!-- Exact HTTPS return only. Native launch requires the user's Android link selection. -->
         <activity
             android:name=".AuthCallbackActivity"
             android:enabled="${authHandoffEnabled}"
             android:exported="true"
             android:noHistory="true"
             android:theme="@style/Theme.NmLite.AuthCallback">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="${applicationId}.auth"
-                    android:host="auth"
-                    android:path="/qq" />
-            </intent-filter>
             <!-- Unverified and opt-in: the user must choose this app for this login link.
                  No domain ownership is claimed; unmatched requests go to their browser. -->
             <intent-filter>

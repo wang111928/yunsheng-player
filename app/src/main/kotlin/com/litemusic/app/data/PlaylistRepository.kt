@@ -81,6 +81,7 @@ internal suspend fun resolveSongIds(
 private const val SONG_DETAIL_BATCH_SIZE = 100
 private const val PLAYLIST_CACHE_SCHEMA = "playlist:v4:"
 private const val MY_PLAYLIST_CACHE_SCHEMA = "my-playlists:v1:"
+private const val OFFLINE_PLAYLIST_CACHE_SCHEMA = "offline-playlist:v1:"
 
 /** Include login identity without placing a raw credential in a cache filename. */
 internal fun playlistSessionFingerprint(session: com.litemusic.data.prefs.AuthStore.Session): Int =
@@ -92,6 +93,10 @@ internal fun playlistDetailCacheKey(
     session: com.litemusic.data.prefs.AuthStore.Session,
 ): String = "$PLAYLIST_CACHE_SCHEMA${playlistId}:${playlistSessionFingerprint(session)}"
 
+/** Durable offline metadata uses a stable account identity, not a rotating credential. */
+internal fun offlinePlaylistDetailCacheKey(playlistId: Long, userId: Long): String =
+    "$OFFLINE_PLAYLIST_CACHE_SCHEMA$userId:detail:$playlistId"
+
 /** Membership checks need IDs, not playable metadata for every existing song. */
 internal fun playlistMembershipForImport(playlist: Playlist): AppResult<Set<Long>> {
     val ids = (playlist.trackIds.map { it.id } + playlist.tracks.map { it.id })
@@ -99,6 +104,29 @@ internal fun playlistMembershipForImport(playlist: Playlist): AppResult<Set<Long
     return if (playlist.trackCount > ids.size) {
         AppResult.Failure(-1, "目标歌单歌曲 ID 未完整返回，请刷新后重试")
     } else ids.asSuccess()
+}
+
+/** Transport success alone is not a playlist mutation success; the API body must confirm it. */
+internal fun <T> requirePlaylistMutationSuccess(
+    result: AppResult<T>,
+    action: String,
+    status: (T) -> Pair<Int, String>,
+): AppResult<T> = when (result) {
+    is AppResult.Failure -> result
+    is AppResult.Success -> {
+        val (code, message) = status(result.data)
+        if (code == 200) result else AppResult.Failure(code, message.ifBlank { "${action}失败($code)" })
+    }
+}
+
+/** Apply only confirmed removals, counting each known member once. */
+internal fun playlistAfterRemovingTracks(playlist: Playlist, ids: List<Long>): Playlist {
+    val existing = (playlist.trackIds.map { it.id } + playlist.tracks.map { it.id }).toSet()
+    val requested = ids.filter { it > 0L }.toSet()
+    val removed = if (existing.isEmpty()) requested else requested.intersect(existing)
+    return playlist.copy(tracks = playlist.tracks.filterNot { it.id in removed },
+        trackIds = playlist.trackIds.filterNot { it.id in removed },
+        trackCount = (playlist.trackCount - removed.size).coerceAtLeast(0))
 }
 
 /** 歌单与收藏：详情/CRUD/加删歌/红心 */
@@ -115,23 +143,63 @@ class PlaylistRepository(
     private var likedSession: com.litemusic.data.prefs.AuthStore.Session? = null
     private val cacheMutationLock = Mutex()
     private val cacheGenerations = mutableMapOf<String, Long>()
+    private val invalidatedOfflineKeys = mutableSetOf<String>()
 
     private suspend fun cacheGeneration(key: String): Long = cacheMutationLock.withLock {
         cacheGenerations[key] ?: 0L
     }
 
-    private suspend fun putCacheIfCurrent(key: String, generation: Long, value: String): Boolean =
+    private suspend fun putOfflineCacheIfCurrent(
+        key: String,
+        generation: Long,
+        expected: com.litemusic.data.prefs.AuthStore.Session,
+        value: String,
+    ): Boolean =
         cacheMutationLock.withLock {
-            if ((cacheGenerations[key] ?: 0L) != generation) false
+            if ((cacheGenerations[key] ?: 0L) != generation || !belongsToCurrentLogin(expected)) false
             else {
-                cache.putString(key, value)
+                cache.putOfflinePlaylistString(expected.userId, key, value)
+                invalidatedOfflineKeys.remove(key)
                 true
             }
         }
 
-    private suspend fun invalidateCache(key: String) = cacheMutationLock.withLock {
+    private suspend fun invalidateOfflineCache(
+        key: String,
+        expected: com.litemusic.data.prefs.AuthStore.Session,
+        legacyKey: String? = null,
+    ) = cacheMutationLock.withLock {
         cacheGenerations[key] = (cacheGenerations[key] ?: 0L) + 1L
-        cache.remove(key)
+        // Invalidation requests a fresh online read. The last confirmed offline snapshot
+        // remains a fallback, including the account catalog that locates other playlists.
+        invalidatedOfflineKeys.add(key)
+        legacyKey?.let { cache.remove(it) }
+    }
+
+    private suspend fun updateOfflineSnapshot(
+        id: Long,
+        expected: com.litemusic.data.prefs.AuthStore.Session,
+        transform: (Playlist) -> Playlist,
+    ) = cacheMutationLock.withLock {
+        if (!belongsToCurrentLogin(expected)) return@withLock
+        val detailKey = offlinePlaylistDetailCacheKey(id, expected.userId)
+        val catalogKey = myPlaylistsCacheKey(expected.userId)
+        // Increment before writing so a detail read started before the mutation cannot
+        // overwrite the locally acknowledged result with an older server response.
+        for (key in listOf(detailKey, catalogKey)) {
+            cacheGenerations[key] = (cacheGenerations[key] ?: 0L) + 1L
+            invalidatedOfflineKeys.add(key)
+        }
+        cache.getOfflinePlaylistString(expected.userId, detailKey)?.let { encoded ->
+            runCatching { json.decodeFromString<Playlist>(encoded) }.getOrNull()?.let { playlist ->
+                cache.putOfflinePlaylistString(expected.userId, detailKey, json.encodeToString(transform(playlist)))
+            }
+        }
+        cache.getOfflinePlaylistString(expected.userId, catalogKey)?.let { encoded ->
+            runCatching { json.decodeFromString<List<Playlist>>(encoded) }.getOrNull()?.let { playlists ->
+                cache.putOfflinePlaylistString(expected.userId, catalogKey, json.encodeToString(playlists.map { if (it.id == id) transform(it) else it }))
+            }
+        }
     }
 
     private suspend fun belongsToCurrentLogin(expected: com.litemusic.data.prefs.AuthStore.Session): Boolean {
@@ -152,6 +220,9 @@ class PlaylistRepository(
 
     suspend fun currentUserId(): Long = auth.ensureUserId()
 
+    /** Render the saved account directory before any online profile refresh can time out. */
+    suspend fun offlineCatalog(): AppResult<List<Playlist>>? = cachedMyPlaylists(auth.currentSession())
+
     suspend fun myPlaylists(): AppResult<List<Playlist>> {
         val uid = auth.ensureUserId()
         if (uid == 0L) return AppResult.Failure(-1, "未登录")
@@ -159,7 +230,7 @@ class PlaylistRepository(
         if (expected.userId != uid || !expected.loggedIn) {
             return AppResult.Failure(-1, "登录状态已变化，请重新刷新")
         }
-        val cacheKey = myPlaylistsCacheKey(expected)
+        val cacheKey = myPlaylistsCacheKey(expected.userId)
         val generation = cacheGeneration(cacheKey)
         val unique = LinkedHashMap<Long, Playlist>()
         var offset = 0
@@ -177,7 +248,7 @@ class PlaylistRepository(
                     page.forEach { playlist -> if (playlist.id > 0L) unique.putIfAbsent(playlist.id, playlist) }
                     if (!result.data.more) {
                         val playlists = unique.values.toList()
-                        if (!putCacheIfCurrent(cacheKey, generation, json.encodeToString(playlists))) {
+                        if (!putOfflineCacheIfCurrent(cacheKey, generation, expected, json.encodeToString(playlists))) {
                             return cachedMyPlaylists(expected)
                                 ?: AppResult.Failure(-1, "歌单已变更，请重新刷新")
                         }
@@ -195,20 +266,53 @@ class PlaylistRepository(
         return cachedMyPlaylists(expected) ?: AppResult.Failure(-1, "歌单数量超过分页上限，请重试")
     }
 
-    private fun myPlaylistsCacheKey(session: com.litemusic.data.prefs.AuthStore.Session): String =
+    private fun legacyMyPlaylistsCacheKey(session: com.litemusic.data.prefs.AuthStore.Session): String =
         "$MY_PLAYLIST_CACHE_SCHEMA${playlistSessionFingerprint(session)}"
+
+    private fun myPlaylistsCacheKey(userId: Long): String = "$OFFLINE_PLAYLIST_CACHE_SCHEMA$userId:catalog"
 
     /** Never expose one login's library to another login during an offline cold start. */
     private suspend fun cachedMyPlaylists(expected: com.litemusic.data.prefs.AuthStore.Session): AppResult<List<Playlist>>? {
         if (!belongsToCurrentLogin(expected)) return null
-        val encoded = cache.getString(myPlaylistsCacheKey(expected)) ?: return null
+        if (expected.userId <= 0L) return null
+        val cacheKey = myPlaylistsCacheKey(expected.userId)
+        val encoded = cache.getOfflinePlaylistString(expected.userId, cacheKey)
+            ?: cache.getString(legacyMyPlaylistsCacheKey(expected))?.also { legacy ->
+                if (belongsToCurrentLogin(expected)) {
+                    cache.putOfflinePlaylistString(expected.userId, cacheKey, legacy)
+                }
+            }
+            ?: return null
         if (!belongsToCurrentLogin(expected)) return null
         return runCatching { json.decodeFromString<List<Playlist>>(encoded).asSuccess() }.getOrNull()
     }
 
-    private suspend fun invalidateMyPlaylistsCache() {
-        val session = auth.currentSession()
-        if (session.userId > 0L) invalidateCache(myPlaylistsCacheKey(session))
+    /** IDs whose account-private, fully resolved detail remains available after a cold restart. */
+    suspend fun savedPlaylistIds(userId: Long): Set<Long> {
+        if (userId <= 0L) return emptySet()
+        val expected = auth.currentSession()
+        if (expected.userId != userId || !expected.loggedIn) return emptySet()
+        val catalog = (cachedMyPlaylists(expected) as? AppResult.Success)?.data ?: return emptySet()
+        return buildSet {
+            catalog.forEach { playlist ->
+                val id = playlist.id
+                if (id > 0L && cache.getOfflinePlaylistString(userId, offlinePlaylistDetailCacheKey(id, userId)) != null) {
+                    add(id)
+                }
+            }
+        }
+    }
+
+    private suspend fun invalidateMyPlaylistsCache() = invalidateMyPlaylistsCache(auth.currentSession())
+
+    private suspend fun invalidateMyPlaylistsCache(session: com.litemusic.data.prefs.AuthStore.Session) {
+        if (session.userId > 0L) {
+            invalidateOfflineCache(
+                myPlaylistsCacheKey(session.userId),
+                session,
+                legacyMyPlaylistsCacheKey(session),
+            )
+        }
     }
 
     private companion object {
@@ -218,16 +322,24 @@ class PlaylistRepository(
 
     suspend fun detail(id: Long, force: Boolean = false): AppResult<Playlist> {
         val expected = auth.currentSession()
-        val cacheKey = playlistDetailCacheKey(id, expected)
+        val cacheKey = offlinePlaylistDetailCacheKey(id, expected.userId)
+        val legacyKey = playlistDetailCacheKey(id, expected)
         val generation = cacheGeneration(cacheKey)
         suspend fun cachedOnSameLogin(): AppResult<Playlist>? {
             if (!belongsToCurrentLogin(expected)) return null
-            val encoded = cache.getString(cacheKey)
+            if (expected.userId <= 0L) return null
+            val encoded = cache.getOfflinePlaylistString(expected.userId, cacheKey)
+                ?: cache.getString(legacyKey)?.also { legacy ->
+                    if (belongsToCurrentLogin(expected)) {
+                        cache.putOfflinePlaylistString(expected.userId, cacheKey, legacy)
+                    }
+                }
             if (!belongsToCurrentLogin(expected)) return null
             return encoded
                 ?.let { encoded -> runCatching { json.decodeFromString<Playlist>(encoded).asSuccess() }.getOrNull() }
         }
-        if (!force) cachedOnSameLogin()?.let { return it }
+        val needsRefresh = cacheMutationLock.withLock { cacheKey in invalidatedOfflineKeys }
+        if (!force && !needsRefresh) cachedOnSameLogin()?.let { return it }
         val r = api.getPlaylistDetail(id)
         if (r is AppResult.Success) {
             if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，请重新刷新")
@@ -241,7 +353,7 @@ class PlaylistRepository(
                     is AppResult.Failure -> return cachedOnSameLogin() ?: resolved
                 }
                 val complete = pl.copy(tracks = tracks)
-                if (!putCacheIfCurrent(cacheKey, generation, json.encodeToString(Playlist.serializer(), complete))) {
+                if (!putOfflineCacheIfCurrent(cacheKey, generation, expected, json.encodeToString(Playlist.serializer(), complete))) {
                     return cachedOnSameLogin() ?: AppResult.Failure(-1, "歌单已变更，请重新刷新")
                 }
                 if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，请重新刷新")
@@ -254,7 +366,9 @@ class PlaylistRepository(
         return cachedOnSameLogin() ?: (r as AppResult.Failure)
     }
 
-    suspend fun create(name: String) = api.createPlaylist(name).also { result ->
+    suspend fun create(name: String) = requirePlaylistMutationSuccess(api.createPlaylist(name), "创建歌单") {
+        it.code to ""
+    }.also { result ->
         if (result is AppResult.Success) invalidateMyPlaylistsCache()
     }
 
@@ -276,9 +390,13 @@ class PlaylistRepository(
     }
 
     /** Always read fresh membership before writing; no full-song expansion or detail cache. */
-    suspend fun membershipForImport(id: Long): AppResult<Set<Long>> = when (val result = api.getPlaylistDetail(id)) {
+    suspend fun membershipForImport(id: Long): AppResult<Set<Long>> {
+        val expected = auth.currentSession()
+        if (!expected.loggedIn || expected.userId <= 0L) return AppResult.Failure(-1, "未登录")
+        return when (val result = api.getPlaylistDetail(id)) {
         is AppResult.Failure -> result
         is AppResult.Success -> {
+            if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，请重新选择歌单")
             val playlist = result.data.playlist
             when {
                 result.data.code != 200 -> AppResult.Failure(result.data.code, "目标歌单读取失败")
@@ -287,28 +405,73 @@ class PlaylistRepository(
             }
         }
     }
-
-    suspend fun update(id: Long, name: String?, desc: String?) = api.updatePlaylist(id, name, desc).also { result ->
-        if (result is AppResult.Success) invalidatePlaylistCaches(id)
     }
 
-    suspend fun delete(ids: List<Long>) = api.deletePlaylist(ids).also { result ->
+    suspend fun update(id: Long, name: String?, desc: String?): AppResult<com.litemusic.shared.model.StatusResponse> {
+        val expected = auth.currentSession()
+        if (!expected.loggedIn || expected.userId <= 0L) return AppResult.Failure(-1, "未登录")
+        val result = requirePlaylistMutationSuccess(api.updatePlaylist(id, name, desc), "修改歌单") { it.code to it.message }
         if (result is AppResult.Success) {
-            for (id in ids) detailCacheInvalidate(id)
-            invalidateMyPlaylistsCache()
+            if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，请重新刷新")
+            updateOfflineSnapshot(id, expected) { it.copy(name = name ?: it.name, description = desc ?: it.description) }
+            invalidatePlaylistCaches(id, expected)
         }
+        return result
     }
 
-    suspend fun addTracks(pid: Long, ids: List<Long>) = api.addTracks(pid, ids).also { result ->
-        if (result is AppResult.Success) invalidatePlaylistCaches(pid)
+    suspend fun delete(ids: List<Long>): AppResult<com.litemusic.shared.model.StatusResponse> {
+        val expected = auth.currentSession()
+        if (!expected.loggedIn || expected.userId <= 0L) return AppResult.Failure(-1, "未登录")
+        val result = requirePlaylistMutationSuccess(api.deletePlaylist(ids), "删除歌单") { it.code to it.message }
+        if (result is AppResult.Success) {
+            if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，请重新刷新")
+            // Deletion removes just the confirmed deleted playlists, never the full directory.
+            cacheMutationLock.withLock {
+                val catalogKey = myPlaylistsCacheKey(expected.userId)
+                val deleted = ids.toSet()
+                cacheGenerations[catalogKey] = (cacheGenerations[catalogKey] ?: 0L) + 1L
+                val encoded = cache.getOfflinePlaylistString(expected.userId, catalogKey)
+                val catalog = encoded?.let { runCatching { json.decodeFromString<List<Playlist>>(it) }.getOrNull() }
+                catalog?.let { cache.putOfflinePlaylistString(expected.userId, catalogKey, json.encodeToString(it.filterNot { playlist -> playlist.id in deleted })) }
+                for (id in deleted) {
+                    val key = offlinePlaylistDetailCacheKey(id, expected.userId)
+                    cacheGenerations[key] = (cacheGenerations[key] ?: 0L) + 1L
+                    cache.removeOfflinePlaylist(expected.userId, key)
+                    cache.remove(playlistDetailCacheKey(id, expected))
+                    invalidatedOfflineKeys.remove(key)
+                }
+                cache.remove(legacyMyPlaylistsCacheKey(expected))
+            }
+        }
+        return result
     }
 
-    suspend fun removeTracks(pid: Long, ids: List<Long>) = api.delTracks(pid, ids).also { result ->
-        if (result is AppResult.Success) invalidatePlaylistCaches(pid)
+    suspend fun addTracks(pid: Long, ids: List<Long>, ownerUserId: Long? = null): AppResult<com.litemusic.shared.model.PlaylistManipulateResponse> {
+        val expected = auth.currentSession()
+        if (!expected.loggedIn || expected.userId <= 0L) return AppResult.Failure(-1, "未登录")
+        if (ownerUserId != null && ownerUserId != expected.userId) return AppResult.Failure(-1, "登录账号已变化，请重新选择歌单")
+        val result = requirePlaylistMutationSuccess(api.addTracks(pid, ids), "收藏歌曲") { it.code to it.message }
+        if (result is AppResult.Success) {
+            if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，收藏结果未写入")
+            invalidatePlaylistCaches(pid, expected)
+        }
+        return result
+    }
+
+    suspend fun removeTracks(pid: Long, ids: List<Long>): AppResult<com.litemusic.shared.model.PlaylistManipulateResponse> {
+        val expected = auth.currentSession()
+        if (!expected.loggedIn || expected.userId <= 0L) return AppResult.Failure(-1, "未登录")
+        val result = requirePlaylistMutationSuccess(api.delTracks(pid, ids), "删除歌曲") { it.code to it.message }
+        if (result is AppResult.Success) {
+            if (!belongsToCurrentLogin(expected)) return AppResult.Failure(-1, "登录状态已变化，请重新刷新")
+            updateOfflineSnapshot(pid, expected) { playlistAfterRemovingTracks(it, ids) }
+            invalidatePlaylistCaches(pid, expected)
+        }
+        return result
     }
 
     suspend fun subscribe(pid: Long, subscribe: Boolean): AppResult<*> {
-        val r = api.subscribePlaylist(pid, subscribe)
+        val r = requirePlaylistMutationSuccess(api.subscribePlaylist(pid, subscribe), "收藏歌单") { it.code to it.message }
         if (r is AppResult.Success) {
             invalidatePlaylistCaches(pid)
         }
@@ -316,15 +479,23 @@ class PlaylistRepository(
     }
 
     /** 失效歌单详情缓存（收藏/取消收藏/删歌后调用） */
-    suspend fun detailCacheInvalidate(id: Long) {
-        cache.remove("playlist:v3:" + id)
-        invalidateCache(playlistDetailCacheKey(id, auth.currentSession()))
-        cache.remove("playlist:$id")
+    suspend fun detailCacheInvalidate(id: Long) = detailCacheInvalidate(id, auth.currentSession())
+
+    private suspend fun detailCacheInvalidate(id: Long, session: com.litemusic.data.prefs.AuthStore.Session) {
+        if (session.userId > 0L) {
+            invalidateOfflineCache(
+                offlinePlaylistDetailCacheKey(id, session.userId),
+                session,
+                playlistDetailCacheKey(id, session),
+            )
+        }
     }
 
-    private suspend fun invalidatePlaylistCaches(id: Long) {
-        detailCacheInvalidate(id)
-        invalidateMyPlaylistsCache()
+    private suspend fun invalidatePlaylistCaches(id: Long) = invalidatePlaylistCaches(id, auth.currentSession())
+
+    private suspend fun invalidatePlaylistCaches(id: Long, session: com.litemusic.data.prefs.AuthStore.Session) {
+        detailCacheInvalidate(id, session)
+        invalidateMyPlaylistsCache(session)
     }
 
     // ---- 红心收藏 ----

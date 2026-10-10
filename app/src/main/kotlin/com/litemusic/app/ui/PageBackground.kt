@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.paint
 import androidx.compose.ui.graphics.Brush
@@ -14,11 +15,13 @@ import androidx.compose.ui.res.painterResource
 import com.litemusic.design.theme.LocalNmlThemeKind
 import com.litemusic.design.theme.NmThemeKind
 
+internal val LocalBackgroundStrength = staticCompositionLocalOf { 1 }
+
 @Composable
 internal fun pageTopColor(): Color {
     val colors = MaterialTheme.colorScheme
     return if (colors.background == Color.Black) Color.Black
-        else lerp(colors.background, colors.primaryContainer, 0.26f)
+        else lerp(colors.background, colors.primaryContainer, listOf(0.12f, 0.26f, 0.42f)[LocalBackgroundStrength.current.coerceIn(0, 2)])
 }
 
 /** One opaque page backdrop avoids stacking different translucent gradients in each tab. */
@@ -26,22 +29,24 @@ internal fun pageTopColor(): Color {
 internal fun Modifier.nmlPageBackground(): Modifier {
     val colors = MaterialTheme.colorScheme
     val themeKind = LocalNmlThemeKind.current
+    val strength = LocalBackgroundStrength.current
     val art = artSkinDrawable(themeKind)
     if (art != null) {
         val darkArt = themeKind == NmThemeKind.STARRY_NIGHT || themeKind == NmThemeKind.DREAM
         // The painting remains a real page skin. The gentle top/bottom veil protects app-bar and
         // long-list text while leaving the central composition visibly present.
-        val veil = remember(colors.background, darkArt) {
+        val visibility = listOf(0.40f, 0.64f, 0.80f)[strength.coerceIn(0, 2)]
+        val veil = remember(colors.background, darkArt, strength) {
             Brush.verticalGradient(
                 listOf(
-                    colors.background.copy(alpha = if (darkArt) 0.22f else 0.12f),
+                    colors.background.copy(alpha = if (darkArt) 0.30f else 0.18f),
                     Color.Transparent,
-                    colors.background.copy(alpha = if (darkArt) 0.54f else 0.38f),
+                    colors.background.copy(alpha = if (darkArt) 0.60f else 0.46f),
                 ),
             )
         }
         return background(colors.background)
-            .paint(painter = painterResource(art), alpha = 0.64f, contentScale = ContentScale.Crop)
+            .paint(painter = painterResource(art), alpha = visibility, contentScale = ContentScale.Crop)
             .background(veil)
     }
     if (colors.background == Color.Black) return background(Color.Black)

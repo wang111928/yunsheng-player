@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
+import android.os.SystemClock
 
 /**
  * 播放服务：MediaSessionService + ExoPlayer。
@@ -75,6 +76,13 @@ class PlaybackService : MediaSessionService() {
 
         @Volatile
         var lockScreenLyric: LockScreenLyricController? = null
+
+        private val sleepTimer = SleepTimerController(SystemClock::elapsedRealtime)
+        val sleepTimerState = sleepTimer.state
+        fun startSleepTimer(minutes: Int) = sleepTimer.startMinutes(minutes)
+        fun stopAfterCurrentTrack(mediaKey: String, selectionGeneration: Long) =
+            sleepTimer.stopAfterCurrent(mediaKey, selectionGeneration)
+        fun cancelSleepTimer() = sleepTimer.cancel()
     }
 
     /** Each direct selection may force-refresh its URL once; a stale selection cannot consume it. */
@@ -283,6 +291,7 @@ class PlaybackService : MediaSessionService() {
                             player.play()
                         }
                         s.phase == PlayPhase.PLAYING && !player.isPlaying -> {
+                            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
                             if (player.playbackState == Player.STATE_IDLE) player.prepare()
                             player.play()
                         }
@@ -386,6 +395,11 @@ class PlaybackService : MediaSessionService() {
                         else -> Unit
                     }
                     Player.STATE_ENDED -> {
+                        if (sleepTimer.shouldPause(SystemClock.elapsedRealtime(), currentMediaKeyOf(player), stateMachine.state.value.selectionGeneration)) {
+                            stateMachine.onPaused()
+                            pauseInternally()
+                            return
+                        }
                         if (shouldAdvanceAfterEnded(stateMachine.state.value.phase)) {
                             val endingMediaKey = currentMediaKeyOf(player)
                             val next = stateMachine.nextIndex()
@@ -529,6 +543,12 @@ class PlaybackService : MediaSessionService() {
             while (true) {
                 kotlinx.coroutines.delay(250)
                 val s = stateMachine.state.value
+                sleepTimer.onSelectionChanged(s.current?.let(::mediaKey), s.selectionGeneration)
+                if (sleepTimer.shouldPause(SystemClock.elapsedRealtime(), endedMediaKey = null)) {
+                    stateMachine.onPaused()
+                    pauseInternally()
+                    continue
+                }
                 val currentKey = s.current?.let(::mediaKey)
                 // Before a restored source has finished resolving, ExoPlayer reports position
                 // zero. Never write that bootstrap value over the persisted resume position.
@@ -824,6 +844,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         cancelCurrentStreamCompletion()
+        // A new service/session must never inherit a timer from a destroyed playback lifecycle.
+        cancelSleepTimer()
         scope.cancel()
         mediaSession.run { player.release(); release() }
         // StreamAudioCacheStore intentionally retains the process-wide SimpleCache. A cancelled

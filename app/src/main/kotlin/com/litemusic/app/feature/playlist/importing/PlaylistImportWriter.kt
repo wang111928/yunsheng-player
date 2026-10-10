@@ -12,6 +12,7 @@ internal suspend fun writePlaylistImport(
     selected: Set<Long>,
     readExisting: suspend () -> AppResult<Set<Long>>,
     writeBatch: suspend (List<Long>) -> AppResult<Unit>,
+    onBatchWritten: suspend (List<Long>) -> Unit = {},
 ): AppResult<PlaylistImportWriteResult> {
     val existing = when (val result = readExisting()) {
         is AppResult.Failure -> return result
@@ -22,7 +23,7 @@ internal suspend fun writePlaylistImport(
     for (batch in importBatchPlan(matches, selected, existing)) {
         currentCoroutineContext().ensureActive()
         when (writeBatch(batch)) {
-            is AppResult.Success -> added += batch.size
+            is AppResult.Success -> { added += batch.size; onBatchWritten(batch) }
             is AppResult.Failure -> failed += batch.size
         }
     }

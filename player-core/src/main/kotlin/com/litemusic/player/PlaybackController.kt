@@ -30,6 +30,7 @@ class PlaybackController(
     private var pendingSeekMs: Long? = null
 
     val state: StateFlow<com.litemusic.shared.player.PlayerUiState> = stateMachine.state
+    val sleepTimerState: StateFlow<SleepTimerState> = PlaybackService.sleepTimerState
 
     suspend fun connect() {
         runCatching {
@@ -145,6 +146,13 @@ class PlaybackController(
     fun removeAt(index: Int) = stateMachine.removeAt(index)
 
     fun move(from: Int, to: Int) = stateMachine.move(from, to)
+
+    fun startSleepTimer(minutes: Int) = PlaybackService.startSleepTimer(minutes)
+    fun cancelSleepTimer() = PlaybackService.cancelSleepTimer()
+    fun stopAfterCurrentTrack() {
+        val state = state.value
+        state.current?.let { PlaybackService.stopAfterCurrentTrack(playbackMediaKey(it), state.selectionGeneration) }
+    }
 
     fun release() {
         scope.launch { controller?.release() }

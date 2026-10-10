@@ -1,6 +1,7 @@
 package com.litemusic.app.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
@@ -45,6 +46,7 @@ fun AppRoot(
     val settings: SettingsStore = koinInject()
     val themeFlow = remember(settings) { settings.theme.catch { emit("light") } }
     val theme by themeFlow.collectAsStateWithLifecycle(initialValue = "")
+    val backgroundStrength by settings.backgroundStrength.collectAsStateWithLifecycle(initialValue = 1)
     val auth: AuthStore = koinInject()
     val sessionFlow = remember(auth) {
         auth.session.map<AuthStore.Session, AuthStore.Session?> { it }.catch { emit(AuthStore.Session()) }
@@ -69,6 +71,7 @@ fun AppRoot(
     }
 
     NmTheme(themeKind = displayedTheme) {
+      CompositionLocalProvider(LocalBackgroundStrength provides backgroundStrength) {
         Box(Modifier.fillMaxSize()) {
             when {
                 activeSession?.loggedIn == true -> MainNavHost(playerEntry, onPlayerEntryConsumed)
@@ -82,6 +85,7 @@ fun AppRoot(
                 StartupSkin(displayedTheme)
             }
         }
+      }
     }
 }
 

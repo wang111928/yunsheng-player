@@ -1,6 +1,7 @@
 package com.litemusic.app.feature.update
 
 import java.net.URI
+import kotlinx.serialization.Serializable
 
 data class GithubRelease(
     val tagName: String,
@@ -11,6 +12,7 @@ data class GithubRelease(
     val assets: List<GithubReleaseAsset>,
 )
 
+@Serializable
 data class GithubReleaseAsset(
     val name: String,
     val size: Long?,
@@ -19,6 +21,7 @@ data class GithubReleaseAsset(
     val digest: String?,
 )
 
+@Serializable
 data class AvailableUpdate(
     val versionCode: Long,
     val versionName: String,

@@ -1,6 +1,7 @@
 package com.litemusic.app.feature.playlist.importing
 
 import com.litemusic.shared.model.Song
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -11,11 +12,13 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /** A user-supplied song reference. It remains only a query until the preview matches it. */
+@Serializable
 data class ImportedSongMetadataAlternative(
     val artist: String = "",
     val album: String = "",
 )
 
+@Serializable
 data class ImportedSongQuery(
     val title: String,
     val artist: String = "",
@@ -32,6 +35,7 @@ data class ImportedSongQuery(
     val displayName: String get() = if (artist.isBlank()) title else "$title · $artist"
 }
 
+@Serializable
 data class ImportedSongMatch(
     val query: ImportedSongQuery,
     val song: Song? = null,
@@ -46,11 +50,21 @@ data class ImportedSongMatch(
 }
 
 /** Only a real, publicly readable source may produce this value. */
+enum class ExternalPlaylistReadCompleteness {
+    /** The source declared a count and every declared item was read. */
+    COMPLETE,
+    /** The source declared more items than this reader received. */
+    INCOMPLETE,
+    /** The source did not provide a count that this reader can verify. */
+    UNKNOWN,
+}
+
 data class ExternalPlaylistSource(
     val sourceLabel: String,
     val title: String = "",
     val songs: List<ImportedSongQuery>,
     val totalCount: Int = songs.size,
+    val readCompleteness: ExternalPlaylistReadCompleteness = ExternalPlaylistReadCompleteness.UNKNOWN,
 )
 
 /**

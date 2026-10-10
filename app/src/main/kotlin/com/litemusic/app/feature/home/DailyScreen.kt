@@ -2,7 +2,7 @@ package com.litemusic.app.feature.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import com.litemusic.design.components.nmlPressable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,6 +79,8 @@ import com.litemusic.app.feature.player.SongActionSheet
 import com.litemusic.app.feature.playlist.rememberPlaylistPlayer
 import com.litemusic.app.feature.search.ArtistInfoDialog
 import com.litemusic.app.ui.Routes
+import com.litemusic.app.ui.artSkinDrawable
+import com.litemusic.design.theme.LocalNmlThemeKind
 import com.litemusic.app.util.NetworkStatusMonitor
 import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.NmSnackbarHost
@@ -96,10 +98,11 @@ import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 
-private val DailyInk = Color(0xFF111216)
-private val DailyMuted = Color(0xFF9B9CA5)
-private val DailyRed = Color(0xFFEC2638)
-private val DailyBlue = Color(0xFF6A92D1)
+private val DailyInk: Color @Composable get() = MaterialTheme.colorScheme.background
+private val DailyText: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+private val DailyMuted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+private val DailyRed: Color @Composable get() = MaterialTheme.colorScheme.primary
+private val DailyBlue: Color @Composable get() = MaterialTheme.colorScheme.secondary
 
 private data class DailyStylePageState(
     val categories: List<DailyStyleCategory> = emptyList(),
@@ -304,7 +307,7 @@ fun DailyScreen(
     val playableVisibleSongs = remember(visibleSongs, isOnline, unavailableSongIds) {
         offlinePlayableQueue(visibleSongs, isOnline, unavailableSongIds)
     }
-    Box(Modifier.fillMaxSize().background(DailyInk)) {
+    Box(Modifier.fillMaxSize().background(if (artSkinDrawable(LocalNmlThemeKind.current) != null) Color.Transparent else DailyInk)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = if (!styleMode && isVip && !vipRefreshUsed && showRefreshPrompt) 106.dp else 28.dp),
@@ -313,8 +316,8 @@ fun DailyScreen(
                 Box(
                     Modifier.fillMaxWidth().height(362.dp).background(
                         Brush.verticalGradient(
-                            if (styleMode) listOf(Color(0xFF0DB9CE), Color(0xFF237CCB), Color(0xFF243F74), DailyInk)
-                            else listOf(Color(0xFF1B315E), Color(0xFF3D5E9A), Color(0xFF435D91), DailyInk),
+                            if (artSkinDrawable(LocalNmlThemeKind.current) != null) listOf(Color.Transparent, MaterialTheme.colorScheme.surface.copy(alpha = 0.60f))
+                            else listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surfaceVariant, DailyInk),
                         ),
                     ),
                 ) {
@@ -324,30 +327,30 @@ fun DailyScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White)
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = DailyText)
                             }
                             Row(
                                 modifier = Modifier.weight(1f).padding(horizontal = 14.dp)
-                                    .clip(RoundedCornerShape(26.dp)).background(Color(0x44101B39))
+                                    .clip(RoundedCornerShape(26.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.80f))
                                     .padding(4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Box(
                                     modifier = Modifier.weight(1f).clip(RoundedCornerShape(22.dp))
-                                        .background(if (!styleMode) Color(0xFFDCE1ED) else Color.Transparent).height(42.dp)
-                                        .clickable { styleMode = false },
+                                        .background(if (!styleMode) MaterialTheme.colorScheme.primaryContainer else Color.Transparent).height(42.dp)
+                                        .dailyPressable { styleMode = false },
                                     contentAlignment = Alignment.Center,
-                                ) { Text("默认推荐", color = if (!styleMode) Color(0xFF252936) else Color.White, fontWeight = FontWeight.Bold) }
+                                ) { Text("默认推荐", color = if (!styleMode) MaterialTheme.colorScheme.onPrimaryContainer else DailyText, fontWeight = FontWeight.Bold) }
                                 Box(
                                     modifier = Modifier.weight(1f).clip(RoundedCornerShape(22.dp))
-                                        .background(if (styleMode) Color(0xFFDCE1ED) else Color.Transparent).height(42.dp)
-                                        .clickable { styleMode = true },
+                                        .background(if (styleMode) MaterialTheme.colorScheme.primaryContainer else Color.Transparent).height(42.dp)
+                                        .dailyPressable { styleMode = true },
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Text("风格推荐", color = if (styleMode) Color(0xFF252936) else Color.White, style = MaterialTheme.typography.bodyMedium,
+                                    Text("风格推荐", color = if (styleMode) MaterialTheme.colorScheme.onPrimaryContainer else DailyText, style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = if (styleMode) FontWeight.Bold else null)
                                     Text(
-                                        "NEW", color = Color.White, fontSize = 9.sp,
+                                        "NEW", color = MaterialTheme.colorScheme.onPrimary, fontSize = 9.sp,
                                         modifier = Modifier.align(Alignment.TopEnd).clip(RoundedCornerShape(6.dp))
                                             .background(DailyRed).padding(horizontal = 4.dp, vertical = 1.dp),
                                     )
@@ -355,7 +358,7 @@ fun DailyScreen(
                             }
                             if (!styleMode && isVip) Box {
                                 IconButton(onClick = { showMore = true }) {
-                                    Icon(Icons.Default.MoreVert, "更多", tint = Color.White)
+                                    Icon(Icons.Default.MoreVert, "更多", tint = DailyText)
                                 }
                                 DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
                                     DropdownMenuItem(text = { Text(if (vipRefreshUsed) "今日已重新推荐" else "重新推荐一次") },
@@ -367,7 +370,7 @@ fun DailyScreen(
                                 onClick = { styleFiltersExpanded = !styleFiltersExpanded },
                                 enabled = !styleSaving,
                             ) {
-                                Icon(Icons.Default.MoreVert, "展开风格筛选", tint = Color.White)
+                                Icon(Icons.Default.MoreVert, "展开风格筛选", tint = DailyText)
                             }
                         }
                         Spacer(Modifier.weight(1f))
@@ -378,10 +381,10 @@ fun DailyScreen(
                             Column {
                                 Row(verticalAlignment = Alignment.Bottom) {
                                     Text(shownDate.dayOfMonth.toString().padStart(2, '0'),
-                                        color = Color.White, fontSize = 54.sp, lineHeight = 58.sp,
+                                        color = DailyText, fontSize = 54.sp, lineHeight = 58.sp,
                                         fontWeight = FontWeight.Light)
                                     Text("/${shownDate.monthValue.toString().padStart(2, '0')}",
-                                        color = Color.White, fontSize = 24.sp,
+                                        color = DailyText, fontSize = 24.sp,
                                         modifier = Modifier.padding(bottom = 8.dp))
                                 }
                                 Text(
@@ -390,23 +393,23 @@ fun DailyScreen(
                                         selectedDate == null -> "根据你的音乐口味"
                                         else -> "历史日推 · $selectedDate"
                                     },
-                                    color = Color.White.copy(alpha = 0.87f), style = MaterialTheme.typography.bodyMedium)
+                                    color = DailyText.copy(alpha = 0.87f), style = MaterialTheme.typography.bodyMedium)
                             }
                             Spacer(Modifier.weight(1f))
                             if (!styleMode) Row(
                                 modifier = Modifier.clip(RoundedCornerShape(28.dp))
-                                    .background(Color(0x55304470))
-                                    .clickable {
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+                                    .dailyPressable {
                                         if (isVip) showHistory = true
                                         else scope.launch { snackbar.showSnackbar("历史日推需会员") }
                                     }
                                     .padding(horizontal = 14.dp, vertical = 9.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Icon(Icons.Default.History, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.History, null, tint = DailyText, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("历史日推", color = Color.White, style = MaterialTheme.typography.labelMedium)
-                                if (isVip) Text("  VIP", color = Color(0xFFFFD6A3), fontWeight = FontWeight.Bold,
+                                Text("历史日推", color = DailyText, style = MaterialTheme.typography.labelMedium)
+                                if (isVip) Text("  VIP", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold,
                                     style = MaterialTheme.typography.labelSmall)
                             }
                         }
@@ -415,26 +418,26 @@ fun DailyScreen(
             }
             item(key = "controls") {
                 Row(
-                    modifier = Modifier.fillMaxWidth().height(66.dp).background(Color(0xFF191B22))
-                        .clickable(enabled = playableVisibleSongs.isNotEmpty()) {
+                    modifier = Modifier.fillMaxWidth().height(66.dp).background(MaterialTheme.colorScheme.surface)
+                        .dailyPressable(enabled = playableVisibleSongs.isNotEmpty()) {
                             player.playSongs(navController, playableVisibleSongs, 0)
                         }
                         .padding(horizontal = 18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.size(38.dp).clip(CircleShape).background(DailyRed), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.PlayArrow, "播放全部", tint = Color.White)
+                        Icon(Icons.Default.PlayArrow, "播放全部", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                     Spacer(Modifier.width(14.dp))
-                    Text("播放全部", color = Color.White, fontWeight = FontWeight.Bold,
+                    Text("播放全部", color = DailyText, fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.weight(1f))
                     if (isVip && !styleMode) {
                         IconButton(onClick = { refreshForVip() }, enabled = !vipRefreshUsed && !vipRefreshing) {
-                            if (vipRefreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                            if (vipRefreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = DailyText)
                             else Icon(if (vipRefreshUsed) Icons.Default.Check else Icons.Default.Replay,
                                 if (vipRefreshUsed) "今日已重新推荐" else "会员重新推荐一次",
-                                tint = if (vipRefreshUsed) DailyMuted else Color.White)
+                                tint = if (vipRefreshUsed) DailyMuted else DailyText)
                         }
                         Text(if (vipRefreshUsed) "已用" else "1次", color = DailyMuted,
                             style = MaterialTheme.typography.labelSmall)
@@ -550,7 +553,7 @@ fun DailyScreen(
                 when {
                     styleConfigLoading -> item { DailyStatus("正在读取风格标签…") }
                     styleError != null -> item {
-                        DailyStatus("$styleError · 点击重试", DailyRed, Modifier.clickable {
+                        DailyStatus("$styleError · 点击重试", DailyRed, Modifier.dailyPressable {
                             if (stylePage.categories.isEmpty()) {
                                 stylePage = DailyStylePageState()
                                 styleError = null
@@ -560,7 +563,7 @@ fun DailyScreen(
                     }
                     styleLoading -> item { DailyStatus("正在生成风格推荐…") }
                     styleSongs.isEmpty() -> item {
-                        DailyStatus("当前风格暂无推荐歌曲 · 点击重试", modifier = Modifier.clickable { loadStyleSongs() })
+                        DailyStatus("当前风格暂无推荐歌曲 · 点击重试", modifier = Modifier.dailyPressable { loadStyleSongs() })
                     }
                     else -> itemsIndexed(styleSongs, key = { _, song -> "style-${song.id}" }) { index, song ->
                         val queueIndex = offlineQueueStartIndex(
@@ -593,7 +596,7 @@ fun DailyScreen(
                 state.loading && state.data == null -> item { DailyStatus("每日推荐加载中…") }
                 state.error != null && state.data == null -> item {
                     DailyStatus("${state.error} · 点击重试", DailyRed,
-                        Modifier.clickable { viewModel.load(force = true) })
+                        Modifier.dailyPressable { viewModel.load(force = true) })
                 }
                 daily.isEmpty() -> item {
                     DailyStatus(if (selectedDate == null) "今日推荐还未生成，稍后再来看看" else "该日期暂无推荐歌曲")
@@ -625,21 +628,21 @@ fun DailyScreen(
             Row(
                 modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 14.dp)
-                    .clip(RoundedCornerShape(28.dp)).background(Color(0xFF282A32))
+                    .clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surface)
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("不喜欢推荐的歌曲？", color = Color.White,
+                Text("不喜欢推荐的歌曲？", color = DailyText,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f), maxLines = 1)
-                Text("重新推荐", color = Color(0xFF13333A), fontWeight = FontWeight.Bold,
+                Text("重新推荐", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF5CDAEB))
-                        .clickable(enabled = !vipRefreshing) { refreshForVip() }
+                        .background(MaterialTheme.colorScheme.primary)
+                        .dailyPressable(enabled = !vipRefreshing) { refreshForVip() }
                         .padding(horizontal = 14.dp, vertical = 9.dp),
                     style = MaterialTheme.typography.labelMedium)
-                Text("取消", color = Color.White,
-                    modifier = Modifier.padding(start = 10.dp).clickable { showRefreshPrompt = false },
+                Text("取消", color = DailyText,
+                    modifier = Modifier.padding(start = 10.dp).dailyPressable { showRefreshPrompt = false },
                     style = MaterialTheme.typography.labelMedium)
             }
         }
@@ -656,8 +659,8 @@ fun DailyScreen(
     if (showHistory) {
         ModalBottomSheet(
             onDismissRequest = { showHistory = false },
-            containerColor = Color(0xFF202532),
-            contentColor = Color.White,
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = DailyText,
         ) {
             Column(Modifier.fillMaxWidth().padding(bottom = 30.dp)) {
                 Text("历史日推", modifier = Modifier.padding(horizontal = 22.dp),
@@ -690,9 +693,9 @@ private fun DailyStatus(message: String, color: Color = DailyMuted, modifier: Mo
 private fun HistoryDateChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Text(label,
         modifier = Modifier.clip(RoundedCornerShape(24.dp))
-            .background(if (selected) Color(0xFFDCE1ED) else Color(0xFF354157))
-            .clickable(onClick = onClick).padding(horizontal = 15.dp, vertical = 10.dp),
-        color = if (selected) Color(0xFF202532) else Color.White,
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+            .dailyPressable(onClick = onClick).padding(horizontal = 15.dp, vertical = 10.dp),
+        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else DailyText,
         style = MaterialTheme.typography.labelLarge)
 }
 
@@ -724,7 +727,7 @@ private fun DailyStyleFilters(
     if (page.categories.isEmpty()) {
         Text(
             "风格标签暂不可用，点击重新读取",
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onRetryConfig).padding(horizontal = 20.dp, vertical = 14.dp),
+            modifier = Modifier.fillMaxWidth().dailyPressable(onClick = onRetryConfig).padding(horizontal = 20.dp, vertical = 14.dp),
             color = DailyMuted,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -735,13 +738,13 @@ private fun DailyStyleFilters(
         .filter { it.tagId in page.selectedTagIds }.map { it.tagName }
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(24.dp)).background(Color(0xFF24262C))
-            .clickable(enabled = !locked, onClick = onToggle).padding(horizontal = 16.dp, vertical = 12.dp),
+            .clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
+            .dailyPressable(enabled = !locked, onClick = onToggle).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             selectedNames.takeIf { it.isNotEmpty() }?.joinToString(" · ") ?: "选择喜欢的音乐风格",
-            color = Color.White,
+            color = DailyText,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -758,8 +761,8 @@ private fun DailyStyleFilters(
         itemsIndexed(page.categories, key = { _, category -> category.categoryId }) { index, category ->
             Text(
                 category.categoryName,
-                modifier = Modifier.clickable(enabled = !locked) { onCategory(index) }.padding(vertical = 8.dp),
-                color = if (index == page.selectedCategoryIndex) Color.White else DailyMuted,
+                modifier = Modifier.dailyPressable(enabled = !locked) { onCategory(index) }.padding(vertical = 8.dp),
+                color = if (index == page.selectedCategoryIndex) DailyText else DailyMuted,
                 fontWeight = if (index == page.selectedCategoryIndex) FontWeight.Bold else FontWeight.Normal,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -776,10 +779,10 @@ private fun DailyStyleFilters(
             Text(
                 tag.tagName,
                 modifier = Modifier.clip(RoundedCornerShape(18.dp))
-                    .background(if (selected) Color(0xFF452126) else Color(0xFF24262C))
-                    .border(1.dp, if (selected) DailyRed else Color(0xFF34363C), RoundedCornerShape(18.dp))
-                    .clickable(enabled = !locked) { onTag(tag.tagId) }.padding(horizontal = 16.dp, vertical = 8.dp),
-                color = if (selected) DailyRed else Color(0xFFD6D7DD),
+                    .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, if (selected) DailyRed else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
+                    .dailyPressable(enabled = !locked) { onTag(tag.tagId) }.padding(horizontal = 16.dp, vertical = 8.dp),
+                color = if (selected) DailyRed else MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelMedium,
             )
         }
@@ -791,15 +794,15 @@ private fun DailyStyleFilters(
         Text(
             "取消",
             modifier = Modifier.clip(RoundedCornerShape(20.dp)).border(1.dp, DailyMuted, RoundedCornerShape(20.dp))
-                .clickable(enabled = !locked, onClick = onCancel).padding(horizontal = 20.dp, vertical = 10.dp),
-            color = Color.White,
+                .dailyPressable(enabled = !locked, onClick = onCancel).padding(horizontal = 20.dp, vertical = 10.dp),
+            color = DailyText,
             style = MaterialTheme.typography.labelMedium,
         )
         Text(
             if (saving) "保存中…" else if (locked) "请先同步" else "确认",
             modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(DailyRed)
-                .clickable(enabled = !locked, onClick = onConfirm).padding(horizontal = 20.dp, vertical = 10.dp),
-            color = Color.White,
+                .dailyPressable(enabled = !locked, onClick = onConfirm).padding(horizontal = 20.dp, vertical = 10.dp),
+            color = MaterialTheme.colorScheme.onPrimary,
             fontWeight = FontWeight.Bold,
             style = MaterialTheme.typography.labelMedium,
         )
@@ -815,10 +818,10 @@ private fun DailySongRow(
     onMore: () -> Unit,
     onMv: (() -> Unit)?,
 ) {
-    val contentColor = if (enabled) Color.White else DailyMuted
+    val contentColor = if (enabled) DailyText else DailyMuted
     val accentColor = if (enabled) DailyRed else DailyMuted
     Row(
-        modifier = Modifier.fillMaxWidth().height(78.dp).clickable(enabled = enabled, onClick = onClick)
+        modifier = Modifier.fillMaxWidth().height(78.dp).dailyPressable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -830,7 +833,7 @@ private fun DailySongRow(
                 ColorMatrix().apply { setToSaturation(0f) },
             ),
             modifier = Modifier.size(54.dp).clip(RoundedCornerShape(7.dp))
-                .background(Color(0xFF2E3445)),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -845,7 +848,7 @@ private fun DailySongRow(
                 }
                 val vip = song.privilege?.fee == 1 || song.fee == 1
                 if (vip) {
-                    val vipColor = if (enabled) Color(0xFFE8A678) else DailyMuted
+                    val vipColor = if (enabled) MaterialTheme.colorScheme.tertiary else DailyMuted
                     Text("VIP", color = vipColor,
                         modifier = Modifier.border(1.dp, vipColor, RoundedCornerShape(3.dp))
                             .padding(horizontal = 3.dp),
@@ -856,7 +859,7 @@ private fun DailySongRow(
                     Text(reason, color = accentColor, style = MaterialTheme.typography.labelSmall,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.widthIn(max = 100.dp).clip(RoundedCornerShape(3.dp))
-                            .background(Color(0xFF31262A)).padding(horizontal = 3.dp))
+                            .background(MaterialTheme.colorScheme.tertiaryContainer).padding(horizontal = 3.dp))
                     Spacer(Modifier.width(5.dp))
                 }
                 Text(song.artistNames + song.albumName.takeIf { it.isNotBlank() }?.let { " - $it" }.orEmpty(),
@@ -867,7 +870,7 @@ private fun DailySongRow(
         if (onMv != null) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onMv)
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).dailyPressable(onClick = onMv)
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 Icon(Icons.Default.PlayArrow, "播放MV", tint = DailyMuted,
@@ -880,3 +883,7 @@ private fun DailySongRow(
         }
     }
 }
+
+@Composable
+private fun Modifier.dailyPressable(enabled: Boolean = true, onClick: () -> Unit): Modifier =
+    nmlPressable(onClick = onClick, enabled = enabled)

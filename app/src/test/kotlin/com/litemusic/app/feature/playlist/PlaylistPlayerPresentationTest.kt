@@ -108,4 +108,26 @@ class PlaylistPlayerPresentationTest {
     fun staleProgramRequestCannotReportItsSongLoadFailure() {
         assertEquals(false, canReportProgramFailure(requestGeneration = 3L, currentGeneration = 4L))
     }
+
+    @Test
+    fun playlistSearchAndSortKeepPlaybackInTheVisibleOrder() {
+        val songs = listOf(
+            Song(id = 1L, name = "乙", ar = listOf(com.litemusic.shared.model.Artist(name = "周"))),
+            Song(id = 2L, name = "甲", ar = listOf(com.litemusic.shared.model.Artist(name = "王"))),
+        )
+
+        assertEquals(listOf(2L), playlistVisibleSongs(songs, "甲", PlaylistTrackOrder.ORIGINAL).map { it.id })
+        assertEquals(listOf(2L, 1L), playlistVisibleSongs(songs, "", PlaylistTrackOrder.TITLE).map { it.id })
+        assertEquals(listOf(2L, 1L), playlistVisibleSongs(songs, "", PlaylistTrackOrder.ARTIST).map { it.id })
+    }
+
+    @Test
+    fun offlinePlaylistFilterKeepsOnlyFullyCachedSongsAfterSearchAndSort() {
+        val tracks = listOf(Song(id = 1L, name = "甲"), Song(id = 2L, name = "乙"))
+
+        assertEquals(
+            listOf(2L),
+            playlistVisibleSongs(tracks, "", PlaylistTrackOrder.ORIGINAL, offlineOnly = true, cachedSongIds = setOf(2L)).map { it.id },
+        )
+    }
 }

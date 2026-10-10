@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Comment
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -103,8 +104,11 @@ import com.litemusic.lyric.LyricLine
 import com.litemusic.lyric.LyricSection
 import com.litemusic.lyric.LyricUiLine
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import com.litemusic.shared.player.PlayMode
 import com.litemusic.shared.player.PlayPhase
+import com.litemusic.shared.model.Artist
+import com.litemusic.shared.model.Song
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 
@@ -126,6 +130,7 @@ fun PlayerScreen(
     val state by viewModel.playerState.collectAsStateWithLifecycle()
     val lyricState by viewModel.lyric.collectAsStateWithLifecycle()
     val likedIds by viewModel.liked.collectAsStateWithLifecycle()
+    val sleepTimer by viewModel.sleepTimerState.collectAsStateWithLifecycle()
     val lyricEngine: LyricEngine = koinInject()
     val settings: SettingsStore = koinInject()
     val together: TogetherRepository = koinInject()
@@ -137,6 +142,8 @@ fun PlayerScreen(
     var showQueue by remember { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
     var showTogether by remember { mutableStateOf(false) }
+    var showSongActions by remember { mutableStateOf(false) }
+    var showSleepTimer by remember { mutableStateOf(false) }
     val current = state.current
     LaunchedEffect(startWithLyrics, current?.id) {
         if (startWithLyrics && current != null) showLyrics = true
@@ -189,12 +196,33 @@ fun PlayerScreen(
             TogetherRoomPreview(togetherRoom, navController) { showTogether = false }
         }
     }
+    if (showSleepTimer) {
+        ModalBottomSheet(
+            onDismissRequest = { showSleepTimer = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            SleepTimerSheet(
+                state = sleepTimer,
+                onMinutes = { viewModel.startSleepTimer(it); showSleepTimer = false },
+                onCurrentTrack = { viewModel.stopAfterCurrentTrack(); showSleepTimer = false },
+                onCancel = { viewModel.cancelSleepTimer(); showSleepTimer = false },
+            )
+        }
+    }
 
     if (current == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("暂无播放内容", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
+    }
+    if (showSongActions) {
+        SongActionSheet(
+            song = Song(id = current.id, name = current.title, ar = listOf(Artist(name = current.artist))),
+            onDismiss = { showSongActions = false },
+            onLike = { viewModel.toggleLike(current.id) },
+        )
     }
 
     val playing = state.phase == PlayPhase.PLAYING
@@ -268,6 +296,9 @@ fun PlayerScreen(
                 }
                 IconButton(onClick = { showQueue = true }) {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, "播放队列", tint = Color.White)
+                }
+                IconButton(onClick = { showSongActions = true }) {
+                    Icon(Icons.Default.MoreVert, "歌曲操作", tint = Color.White)
                 }
             }
 
@@ -477,6 +508,9 @@ fun PlayerScreen(
                         tint = if (liked) accent else Color(0xCCFFFFFF),
                         modifier = Modifier.size(23.dp),
                     )
+                }
+                ActionCell(label = "定时", tint = Color(0xCCFFFFFF), onClick = { showSleepTimer = true }) {
+                    Text(if (sleepTimer.mode == com.litemusic.player.SleepTimerMode.OFF) "定时" else "已设", color = Color(0xE6FFFFFF), style = MaterialTheme.typography.labelMedium)
                 }
                 ActionCell(
                     label = "音质",
@@ -809,14 +843,15 @@ private fun LyricsPanel(
 
     // 仅对目标行执行一次原生平滑定位。为目标设置相对视口中心的偏移，
     // 不再先瞬移到目标再做第二段中心校正。
-    LaunchedEffect(currentLine, lines.size, browseState, userDragActive, isUserDragging) {
+    LaunchedEffect(lyricsSourceKey, doc, listState, currentLine, browseState, userDragActive, isUserDragging) {
         if (
             isUserDragging || userDragActive ||
             currentLine !in lines.indices ||
             !browseState.followsPlaybackAt(SystemClock.elapsedRealtime())
         ) return@LaunchedEffect
         val targetItemIndex = currentLine + 1
-        val layout = listState.layoutInfo
+        val layout = snapshotFlow { listState.layoutInfo }
+            .first { it.totalItemsCount >= lines.size + 2 && it.viewportEndOffset > it.viewportStartOffset }
         val viewport = layout.viewportEndOffset - layout.viewportStartOffset
         val targetHeight = layout.visibleItemsInfo
             .firstOrNull { it.index == targetItemIndex }

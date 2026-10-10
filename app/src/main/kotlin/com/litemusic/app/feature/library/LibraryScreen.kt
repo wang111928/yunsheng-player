@@ -82,6 +82,7 @@ fun LibraryScreen(
         "收藏" -> if (currentUid > 0L) {
             state.myPlaylists.filter { it.userId > 0L && it.userId != currentUid }
         } else emptyList()
+        "离线" -> offlinePlaylistDirectory(state.myPlaylists, state.offlinePlaylistIds)
         else -> state.myPlaylists
     }
     val createdCount = if (currentUid > 0L) state.myPlaylists.count { it.userId == 0L || it.userId == currentUid } else state.myPlaylists.size
@@ -201,7 +202,7 @@ fun LibraryScreen(
             item {
                 LibraryModeTabs(
                     selected = playlistTab,
-                    labels = listOf("近期", "创建", "收藏"),
+                    labels = listOf("近期", "创建", "收藏", "离线"),
                     onSelect = { playlistTab = it },
                     compact = true,
                 )

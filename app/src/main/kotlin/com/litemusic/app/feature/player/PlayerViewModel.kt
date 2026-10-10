@@ -9,6 +9,7 @@ import com.litemusic.app.data.SongRepository
 import com.litemusic.lyric.LyricEngine
 import com.litemusic.lyric.LyricUiLine
 import com.litemusic.player.PlaybackController
+import com.litemusic.player.SleepTimerState
 import com.litemusic.shared.model.LyricContent
 import com.litemusic.shared.model.LyricResponse
 import com.litemusic.shared.player.PlayerUiState
@@ -59,6 +60,7 @@ class PlayerViewModel(
     )
 
     val playerState: StateFlow<PlayerUiState> = controller.state
+    val sleepTimerState: StateFlow<SleepTimerState> = controller.sleepTimerState
     val liked: StateFlow<Set<Long>> = playlistRepository.likedIds
 
     init {
@@ -80,6 +82,9 @@ class PlayerViewModel(
     fun cycleMode() = controller.cyclePlayMode()
     fun removeAt(index: Int) = controller.removeAt(index)
     fun move(from: Int, to: Int) = controller.move(from, to)
+    fun startSleepTimer(minutes: Int) = controller.startSleepTimer(minutes)
+    fun stopAfterCurrentTrack() = controller.stopAfterCurrentTrack()
+    fun cancelSleepTimer() = controller.cancelSleepTimer()
 
     /** Records the source before showing the system picker, so a later song switch cannot misapply it. */
     fun prepareLocalLyricImport(item: QueueItem): Boolean = localLyricImports.prepare(item)

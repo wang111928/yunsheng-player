@@ -211,25 +211,18 @@ fun MainNavHost(playerEntry: Boolean? = null, onPlayerEntryConsumed: () -> Unit 
     // Draw an art skin once for the whole activity, before Scaffold consumes the status-bar
     // inset. Drawing it only inside Scaffold starts the crop below the status bar and leaves a
     // conspicuous solid-colour strip above it.
-    // DailyScreen owns an opaque DailyInk backdrop. It deliberately starts below the safe
-    // drawing inset, so letting an art skin reach the status bar would create a second seam.
-    // Keep its established deep-blue status bar until that screen is made edge-to-edge itself.
-    val useFullWindowArtSkin = !isFullscreenPlayer && route != Routes.DAILY &&
+    val useFullWindowArtSkin = !isFullscreenPlayer &&
         artSkinDrawable(LocalNmlThemeKind.current) != null
     val scaffoldContainerColor = when {
         useFullWindowArtSkin -> Color.Transparent
         isFullscreenPlayer -> Color(0xFF0B1018)
-        route == Routes.DAILY -> Color(0xFF111216)
         else -> MaterialTheme.colorScheme.background
     }
     SystemBarAppearance(
         darkIcons = MaterialTheme.colorScheme.background.luminance() > 0.5f &&
-            !isFullscreenPlayer && route != Routes.DAILY,
+            !isFullscreenPlayer,
         transparentPlayerBars = isFullscreenPlayer,
         transparentStatusBar = useFullWindowArtSkin,
-        // Daily retains its deliberate deep-blue status bar for colour-only themes. Art themes
-        // bypass the override so the image remains continuous through the status area.
-        statusBarColorOverride = if (route == Routes.DAILY && !useFullWindowArtSkin) android.graphics.Color.rgb(27, 49, 94) else null,
     )
     LaunchedEffect(playerEntry) {
         playerEntry?.let { lyrics ->

@@ -6,6 +6,7 @@ import com.litemusic.app.data.AuthRepository
 import com.litemusic.app.feature.update.AvailableUpdate
 import com.litemusic.app.feature.update.GithubUpdateRepository
 import com.litemusic.app.feature.update.UpdateCheckResult
+import com.litemusic.app.feature.update.UpdateDownloadCoordinator
 import com.litemusic.data.auth.CredentialBackup
 import com.litemusic.data.cache.ContentCache
 import com.litemusic.data.prefs.SettingsStore
@@ -19,6 +20,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import java.io.File
+import android.content.Context
+import com.litemusic.player.AudioCacheUsage
+import com.litemusic.player.OfflinePlaybackAvailability
 
 class SettingsViewModel(
     private val settings: SettingsStore,
@@ -26,6 +30,8 @@ class SettingsViewModel(
     private val auth: AuthRepository,
     private val credentialBackup: CredentialBackup,
     private val updater: GithubUpdateRepository,
+    private val downloads: UpdateDownloadCoordinator,
+    private val context: Context,
 ) : ViewModel() {
 
     data class UiState(
@@ -34,9 +40,11 @@ class SettingsViewModel(
         val autoDegrade: Boolean = true,
         val theme: String = "light",
         val glassBlur: Boolean = true,
+        val backgroundStrength: Int = 1,
         val lock60Hz: Boolean = false,
         val minLocalSec: Int = 30,
         val cacheUsed: Long = 0,
+        val audioCache: AudioCacheUsage? = null,
         val songCheckin: Boolean = false,
         val toast: String? = null,
         val checkingUpdate: Boolean = false,
@@ -50,16 +58,31 @@ class SettingsViewModel(
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
-    private var downloadJob: Job? = null
+    init {
+        viewModelScope.launch {
+            downloads.state.collect { download ->
+                _state.update { old -> old.copy(
+                    downloadingUpdate = download.downloading,
+                    downloadedUpdate = download.downloadedFile,
+                    downloadedBytes = download.downloadedBytes,
+                    totalUpdateBytes = download.totalBytes,
+                    update = download.update ?: old.update,
+                    updateError = download.error,
+                ) }
+            }
+        }
+    }
 
     suspend fun load() {
         val quality = settings.quality.first()
         val autoDegrade = settings.autoDegrade.first()
         val theme = canonicalNmlThemeKind(settings.theme.first())
         val glassBlur = settings.glassBlur.first()
+        val backgroundStrength = settings.backgroundStrength.first()
         val lock60Hz = settings.lock60Hz.first()
         val minLocalSec = settings.minLocalSec.first()
         val cacheUsed = cache.currentDiskSize()
+        val audioCache = OfflinePlaybackAvailability.usage(context)
         val songCheckin = settings.songCheckin.first()
         _state.update { old -> old.copy(
             loaded = true,
@@ -67,9 +90,11 @@ class SettingsViewModel(
             autoDegrade = autoDegrade,
             theme = theme,
             glassBlur = glassBlur,
+            backgroundStrength = backgroundStrength,
             lock60Hz = lock60Hz,
             minLocalSec = minLocalSec,
             cacheUsed = cacheUsed,
+            audioCache = audioCache,
             songCheckin = songCheckin,
         ) }
     }
@@ -95,6 +120,11 @@ class SettingsViewModel(
         _state.update { it.copy(glassBlur = v) }
     }
 
+    fun setBackgroundStrength(v: Int) = viewModelScope.launch {
+        settings.setBackgroundStrength(v)
+        _state.update { it.copy(backgroundStrength = v.coerceIn(0, 2)) }
+    }
+
     fun setLock60Hz(v: Boolean) = viewModelScope.launch {
         settings.setLock60Hz(v)
         _state.update { it.copy(lock60Hz = v) }
@@ -112,7 +142,8 @@ class SettingsViewModel(
 
     fun clearCache() = viewModelScope.launch {
         cache.clear()
-        _state.update { it.copy(cacheUsed = 0, toast = "内容缓存已清理") }
+        val remaining = cache.currentDiskSize()
+        _state.update { it.copy(cacheUsed = remaining, toast = if (remaining == 0L) "内容缓存已清理，离线歌单目录和音频已保留" else "部分缓存未能清理，请稍后重试") }
     }
 
     /** 凭证导出（AES-256-GCM 加密文件，FuoEvolve 优点） */
@@ -136,9 +167,13 @@ class SettingsViewModel(
         viewModelScope.launch {
             _state.update { it.copy(checkingUpdate = true, update = null, updateError = null) }
             when (val result = updater.check(currentVersionCode)) {
-                is UpdateCheckResult.Available -> _state.update { it.copy(checkingUpdate = false, update = result.update) }
-                UpdateCheckResult.UpToDate -> _state.update { it.copy(checkingUpdate = false, toast = "已是最新版本" ) }
-                UpdateCheckResult.LocalVersionNewer -> _state.update { it.copy(checkingUpdate = false, toast = "当前本机版本高于 GitHub 已发布版本" ) }
+                is UpdateCheckResult.Available -> {
+                    val completed = downloads.state.value
+                    val file = completed.downloadedFile?.takeIf { completed.update?.let { ready -> sameUpdateAsset(ready, result.update) } == true }
+                    _state.update { it.copy(checkingUpdate = false, update = result.update, downloadedUpdate = file) }
+                }
+                UpdateCheckResult.UpToDate -> _state.update { it.copy(checkingUpdate = false, downloadedUpdate = null, toast = "已是最新版本" ) }
+                UpdateCheckResult.LocalVersionNewer -> _state.update { it.copy(checkingUpdate = false, downloadedUpdate = null, toast = "当前本机版本高于 GitHub 已发布版本" ) }
                 is UpdateCheckResult.Failed -> _state.update { it.copy(checkingUpdate = false, updateError = result.reason) }
             }
         }
@@ -146,24 +181,18 @@ class SettingsViewModel(
 
     fun downloadUpdate() {
         val update = _state.value.update ?: return
-        if (_state.value.downloadingUpdate || downloadJob?.isActive == true) return
-        downloadJob = viewModelScope.launch {
-            _state.update { it.copy(downloadingUpdate = true, downloadedBytes = 0, totalUpdateBytes = update.asset.size) }
-            updater.download(update) { downloaded, total ->
-                _state.update { it.copy(downloadedBytes = downloaded, totalUpdateBytes = total) }
-            }.onSuccess { file ->
-                _state.update { it.copy(downloadingUpdate = false, downloadedUpdate = file, toast = "更新已下载，可安装") }
-            }.onFailure { error ->
-                if (error !is kotlinx.coroutines.CancellationException) _state.update { it.copy(downloadingUpdate = false, toast = "下载更新失败，请检查网络或存储空间后重试") }
-            }
-        }
+        downloads.start(update)
     }
+
+    fun cancelUpdateDownload() = downloads.cancel()
 
     fun showToast(message: String) = _state.update { it.copy(toast = message) }
 
-    fun discardMissingUpdate() = _state.update {
-        it.copy(downloadedUpdate = null, downloadedBytes = 0, toast = "更新文件已失效，请重新下载")
-    }
+    fun discardMissingUpdate() = downloads.discardMissing()
 
     fun toastShown() = _state.update { it.copy(toast = null) }
 }
+
+/** A completed older APK must not be offered as the newly checked release. */
+internal fun sameUpdateAsset(ready: AvailableUpdate, available: AvailableUpdate): Boolean =
+    ready.versionCode == available.versionCode && ready.asset == available.asset

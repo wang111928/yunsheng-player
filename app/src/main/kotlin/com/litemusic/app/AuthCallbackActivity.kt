@@ -8,22 +8,20 @@ import android.os.Bundle
 import android.widget.Toast
 import com.litemusic.app.feature.auth.AuthHandoffBridge
 
-/** A one-frame, experiment-only callback gate. It never reads OAuth parameters as credentials. */
+/** Restores only a pending live authorization. Callback values are never login credentials. */
 class AuthCallbackActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val enabled = BuildConfig.AUTH_HANDOFF_EXPERIMENT
         val received = intent
         val uri = received?.data
         val httpsJump = received?.action == Intent.ACTION_VIEW &&
             uri?.scheme == "https" && uri.host == "ssl.ptlogin2.qq.com" && uri.path == "/jump"
-        val accepted = enabled && if (httpsJump) AuthHandoffBridge.captureHttpsReturn(received)
-            else AuthHandoffBridge.captureCallback(received)
+        val accepted = httpsJump && AuthHandoffBridge.captureHttpsReturn(received)
         if (accepted) {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             })
-        } else if (enabled && httpsJump) {
+        } else if (httpsJump) {
             // Explicit browser package avoids routing a rejected login link back into this gate.
             val browserPackages = packageManager.queryIntentActivities(
                 Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER),

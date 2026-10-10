@@ -8,8 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-val nmlVersionCode = 238
-val nmlVersionName = "0.2.38"
+val nmlVersionCode = 241
+val nmlVersionName = "0.2.41"
 // Explicitly opt in to the isolated authorization experiment. Stable installs keep their identity.
 val authHandoffExperiment = providers.gradleProperty("nmlAuthHandoffExperiment")
     .map { it.toBooleanStrict() }.getOrElse(false)
@@ -34,7 +34,7 @@ android {
         versionName = nmlVersionName
         vectorDrawables { useSupportLibrary = true }
         buildConfigField("boolean", "AUTH_HANDOFF_EXPERIMENT", "false")
-        manifestPlaceholders["authHandoffEnabled"] = "false"
+        manifestPlaceholders["authHandoffEnabled"] = "true"
     }
 
     flavorDimensions += "edition"
@@ -67,7 +67,7 @@ android {
         }
         getByName("debug") {
             buildConfigField("boolean", "AUTH_HANDOFF_EXPERIMENT", authHandoffExperiment.toString())
-            manifestPlaceholders["authHandoffEnabled"] = authHandoffExperiment.toString()
+            manifestPlaceholders["authHandoffEnabled"] = "true"
             applicationIdSuffix = if (authHandoffExperiment) ".authprobe" else ".debug"
             if (authHandoffExperiment) {
                 versionNameSuffix = "-authprobe"

@@ -22,6 +22,15 @@ class PublicPlaylistReaderTest {
         assertNull(parseQqPlaylistMetadata("<html>登录</html>"))
     }
 
+    @Test fun qqReadIsUnknownWithoutADeclaredSourceCountAndIncompleteWhenItDisagrees() {
+        val unknown = parseQqPlaylistMetadata("""{"code":0,"cdlist":[{"dissname":"收藏","songlist":[{"songname":"晴天","singer":[{"name":"周杰伦"}]}]}]}""")
+        assertEquals(ExternalPlaylistReadCompleteness.UNKNOWN, unknown?.readCompleteness)
+
+        val incomplete = parseQqPlaylistMetadata("""{"code":0,"cdlist":[{"dissname":"收藏","songnum":2,"songlist":[{"songname":"晴天","singer":[{"name":"周杰伦"}]}]}]}""")
+        assertEquals(2, incomplete?.totalCount)
+        assertEquals(ExternalPlaylistReadCompleteness.INCOMPLETE, incomplete?.readCompleteness)
+    }
+
     @Test fun readsStructuredMusicPlaylistsRatherThanUnrelatedWebPageTitles() {
         val html = """<script type="application/ld+json">{"@context":"https://schema.org","@type":"MusicPlaylist","name":"外部清单","track":[{"@type":"MusicRecording","name":"Yesterday","byArtist":{"@type":"MusicGroup","name":"The Beatles"}}]}</script>"""
         assertEquals(listOf(ImportedSongQuery("Yesterday", "The Beatles")), parseMusicPlaylistJsonLd(html)?.songs)

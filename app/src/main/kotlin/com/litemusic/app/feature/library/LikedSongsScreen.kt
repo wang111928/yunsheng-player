@@ -29,6 +29,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
@@ -58,6 +60,7 @@ import com.litemusic.app.feature.player.isOfflineUnavailable
 import com.litemusic.app.feature.player.offlineUnavailableLabel
 import com.litemusic.app.feature.player.offlinePlayableQueue
 import com.litemusic.app.feature.player.offlineQueueStartIndex
+import com.litemusic.app.feature.player.SongActionSheet
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -158,6 +161,15 @@ fun LikedSongsScreen(
     val playableSongs = remember(state.songs, isOnline, offlineUnavailableIds) {
         offlinePlayableQueue(state.songs, isOnline, offlineUnavailableIds)
     }
+    var actionSong by remember { mutableStateOf<Song?>(null) }
+
+    actionSong?.let { song ->
+        SongActionSheet(
+            song = song,
+            onDismiss = { actionSong = null },
+            onLike = { viewModel.toggleLike(song.id) },
+        )
+    }
 
     // A radio can be disabled while this screen is in the background, before Android delivers
     // a callback to the process. Re-evaluate when the library is visible again.
@@ -216,6 +228,7 @@ fun LikedSongsScreen(
                                 )
                             }
                         },
+                        onMore = { actionSong = song },
                     )
                 }
             }

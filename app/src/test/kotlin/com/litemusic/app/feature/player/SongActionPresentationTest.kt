@@ -4,6 +4,7 @@ import com.litemusic.lyric.LyricEngine
 import com.litemusic.lyric.LyricLine
 import com.litemusic.lyric.LyricSection
 import com.litemusic.shared.player.QueueItem
+import com.litemusic.shared.model.Playlist
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -34,6 +35,29 @@ class SongActionPresentationTest {
         assertTrue(canEnqueueNext(isOnline = false, hasCompleteCache = true))
         assertEquals(false, canEnqueueNext(isOnline = false, hasCompleteCache = false))
         assertEquals("离线状态下该歌曲尚未完整缓存，无法加入播放队列", offlineEnqueueNextMessage())
+    }
+
+    @Test
+    fun collectOnlyOffersPlaylistsOwnedByTheCurrentUser() {
+        val playlists = listOf(
+            Playlist(id = 1L, name = "我的歌单", userId = 7L),
+            Playlist(id = 2L, name = "收藏的歌单", userId = 8L),
+            Playlist(id = 3L, name = "无主歌单"),
+        )
+
+        assertEquals(listOf(1L), ownedPlaylistIds(playlists, currentUserId = 7L))
+    }
+
+    @Test
+    fun collectSkipsTheWriteWhenTheSongAlreadyBelongsToThePlaylist() {
+        assertEquals(
+            CollectWriteDecision.AlreadyPresent,
+            collectWriteDecision(songId = 42L, membership = setOf(42L, 99L)),
+        )
+        assertEquals(
+            CollectWriteDecision.Add,
+            collectWriteDecision(songId = 42L, membership = setOf(99L)),
+        )
     }
 
     @Test

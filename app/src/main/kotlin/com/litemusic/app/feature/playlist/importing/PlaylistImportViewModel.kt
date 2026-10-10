@@ -26,6 +26,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Dispatchers
 
 internal fun matchImportedSong(query: ImportedSongQuery, candidates: List<Song>): ImportedSongMatch {
     val queryTitles = query.textEvidence(query.title, query.titleAlternatives, ::importSearchBaseTitle)
@@ -378,11 +379,13 @@ class PlaylistImportViewModel(
     private val playlists: PlaylistRepository,
     private val search: SearchRepository,
     private val externalReader: ExternalPlaylistReader,
+    private val draftStore: PlaylistImportDraftStore? = null,
 ) : ViewModel() {
     data class UiState(
         val input: String = "",
         val sourceTitle: String = "",
         val sourceTotalCount: Int = 0,
+        val sourceReadCompleteness: ExternalPlaylistReadCompleteness = ExternalPlaylistReadCompleteness.UNKNOWN,
         val queries: List<ImportedSongQuery> = emptyList(),
         val matches: List<ImportedSongMatch> = emptyList(),
         val selectedSongIds: Set<Long> = emptySet(),
@@ -392,7 +395,10 @@ class PlaylistImportViewModel(
         val totalQueries: Int = 0,
         val importing: Boolean = false,
         val creatingDestination: Boolean = false,
+        val creationUnconfirmed: Boolean = false,
         val destinationPlaylists: List<Playlist> = emptyList(),
+        val loadingDestinations: Boolean = false,
+        val destinationError: String? = null,
         val selectedDestinationId: Long? = null,
         val newPlaylistName: String = "导入的歌单",
         val error: String? = null,
@@ -405,9 +411,50 @@ class PlaylistImportViewModel(
     private var previewJob: Job? = null
     private var importJob: Job? = null
     private var searchCoordinator = ImportSearchCoordinator()
+    private val completedSongIds = mutableSetOf<Long>()
+    private var draftActive = true
+    private var draftOwnerUserId = 0L
+    private val draftMutex = Mutex()
+
+    init { draftStore?.let { store -> viewModelScope.launch { restoreDraft(store) } } }
+
+    private suspend fun restoreDraft(store: PlaylistImportDraftStore) {
+        if (_state.value.input.isNotBlank() || previewGeneration != 0L) return
+        val userId = playlists.currentUserId()
+        draftOwnerUserId = userId
+        val initialGeneration = previewGeneration
+        val draft = withContext(Dispatchers.IO) { store.load(userId) } ?: return
+        val targetUnavailable = draft.destination != null && playlists.membershipForImport(draft.destination) is AppResult.Failure
+        if (playlists.currentUserId() != userId || previewGeneration != initialGeneration || _state.value.input.isNotBlank()) return
+        completedSongIds += draft.completed
+        _state.value = UiState(input = draft.input, sourceTitle = draft.title, sourceTotalCount = draft.total,
+            sourceReadCompleteness = draft.completeness, queries = draft.queries, matches = draft.matches,
+            selectedSongIds = draft.selected, overflowCount = draft.overflow, selectedDestinationId = draft.destination,
+            newPlaylistName = draft.newName, creationUnconfirmed = draft.creationPending && draft.destination == null,
+            result = if (draft.creationPending && draft.destination == null) "已恢复草稿；上次创建结果未确认，请从已有歌单中选择目标，避免重复创建"
+                else if (targetUnavailable) "已恢复导入草稿；目标歌单暂不可读取，重试前请重新选择" else "已恢复未完成的导入草稿")
+        loadDestinations()
+    }
+
+    private suspend fun persistDraft(expectedUserId: Long? = null): Boolean {
+        val store = draftStore ?: return true
+        return draftMutex.withLock {
+            if (!draftActive) return@withLock true
+            val userId = playlists.currentUserId()
+            if (draftOwnerUserId == 0L) draftOwnerUserId = userId
+            if (userId <= 0L || draftOwnerUserId != userId || (expectedUserId != null && expectedUserId != userId)) return@withLock false
+            val snapshot = _state.value
+            val completed = completedSongIds.toSet()
+            try { withContext(Dispatchers.IO) { store.save(userId, snapshot, completed) }; true }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { _state.update { it.copy(error = "导入草稿无法保存，请检查设备空间") }; false }
+        }
+    }
 
     fun setInput(value: String) {
         if (_state.value.importing) return
+        draftActive = true
+        completedSongIds.clear()
         ++previewGeneration
         previewJob?.cancel()
         val overflow = value.length > MAX_IMPORT_FILE_BYTES
@@ -416,6 +463,7 @@ class PlaylistImportViewModel(
                 input = value.take(MAX_IMPORT_FILE_BYTES),
                 sourceTitle = "",
                 sourceTotalCount = 0,
+                sourceReadCompleteness = ExternalPlaylistReadCompleteness.UNKNOWN,
                 queries = emptyList(),
                 overflowCount = 0,
                 matches = emptyList(),
@@ -425,9 +473,20 @@ class PlaylistImportViewModel(
                 result = null,
             )
         }
+        viewModelScope.launch { persistDraft() }
     }
-    fun setDestination(id: Long?) = _state.update { if (it.importing) it else it.copy(selectedDestinationId = id) }
-    fun setNewPlaylistName(value: String) = _state.update { if (it.importing) it else it.copy(newPlaylistName = value) }
+    fun setDestination(id: Long?) {
+        if (_state.value.importing) return
+        draftActive = true
+        _state.update { it.copy(selectedDestinationId = id, creationUnconfirmed = if (id != null) false else it.creationUnconfirmed) }
+        viewModelScope.launch { persistDraft() }
+    }
+    fun setNewPlaylistName(value: String) {
+        if (_state.value.importing) return
+        draftActive = true
+        _state.update { it.copy(newPlaylistName = value) }
+        viewModelScope.launch { persistDraft() }
+    }
     fun clearResult() = _state.update { it.copy(result = null) }
     fun reportError(message: String) = _state.update { it.copy(error = message, loading = false) }
     fun cancelImport() {
@@ -443,9 +502,9 @@ class PlaylistImportViewModel(
         previewJob?.cancel()
         _state.update { it.copy(loading = false) }
     }
-    fun toggleSong(songId: Long) = _state.update { current ->
+    fun toggleSong(songId: Long) { _state.update { current ->
         if (current.importing || current.loading) current else current.copy(selectedSongIds = if (songId in current.selectedSongIds) current.selectedSongIds - songId else current.selectedSongIds + songId)
-    }
+    }; viewModelScope.launch { persistDraft() } }
 
     fun loadText(raw: String = _state.value.input, sourceLabel: String = "文字导入") {
         if (_state.value.importing) return
@@ -484,6 +543,8 @@ class PlaylistImportViewModel(
                             loading = false,
                             sourceTitle = source.name,
                             sourceTotalCount = maxOf(source.trackCount, source.trackIds.size, source.tracks.size),
+                            sourceReadCompleteness = if (source.tracks.size >= maxOf(source.trackCount, source.trackIds.size, source.tracks.size))
+                                ExternalPlaylistReadCompleteness.COMPLETE else ExternalPlaylistReadCompleteness.INCOMPLETE,
                             queries = source.tracks.take(MAX_IMPORT_SONGS).map { song -> ImportedSongQuery(song.name, song.artistNames, song.albumName) },
                             matches = matches,
                             selectedSongIds = defaultSelectedSongIds(matches),
@@ -492,6 +553,7 @@ class PlaylistImportViewModel(
                         )
                     }
                     loadDestinations()
+                    persistDraft()
                 }
                 is AppResult.Failure -> if (shouldApplyImportPreview(generation, previewGeneration)) {
                     _state.update { it.copy(loading = false, error = detail.message) }
@@ -514,7 +576,8 @@ class PlaylistImportViewModel(
                     if (!shouldApplyImportPreview(generation, previewGeneration)) return@launch
                     previewJob = null
                     resolveQueries(result.data.songs.take(MAX_IMPORT_SONGS), result.data.title.ifBlank { result.data.sourceLabel },
-                        (result.data.totalCount - MAX_IMPORT_SONGS).coerceAtLeast(0), result.data.totalCount)
+                        (result.data.totalCount - MAX_IMPORT_SONGS).coerceAtLeast(0), result.data.totalCount,
+                        result.data.readCompleteness)
                 }
                 is AppResult.Failure -> if (shouldApplyImportPreview(generation, previewGeneration)) {
                     _state.update { it.copy(loading = false, error = result.message) }
@@ -523,18 +586,25 @@ class PlaylistImportViewModel(
         }
     }
 
-    fun resolveQueries(queries: List<ImportedSongQuery>, sourceTitle: String, overflowCount: Int = 0, sourceTotalCount: Int = 0) =
-        startResolution(queries, sourceTitle, overflowCount, sourceTotalCount)
+    fun resolveQueries(queries: List<ImportedSongQuery>, sourceTitle: String, overflowCount: Int = 0, sourceTotalCount: Int = 0,
+        sourceReadCompleteness: ExternalPlaylistReadCompleteness = ExternalPlaylistReadCompleteness.UNKNOWN) =
+        startResolution(queries, sourceTitle, overflowCount, sourceTotalCount, sourceReadCompleteness)
 
-    private fun startResolution(queries: List<ImportedSongQuery>, sourceTitle: String, overflowCount: Int, sourceTotalCount: Int, previous: UiState? = null) {
+    private fun startResolution(queries: List<ImportedSongQuery>, sourceTitle: String, overflowCount: Int, sourceTotalCount: Int,
+        sourceReadCompleteness: ExternalPlaylistReadCompleteness = ExternalPlaylistReadCompleteness.UNKNOWN, previous: UiState? = null) {
         if (_state.value.importing) return
         previewJob?.cancel()
+        draftActive = true
         val generation = ++previewGeneration
         previewJob = viewModelScope.launch {
             searchCoordinator.clearLimited()
             val pendingIndices = queries.indices.filter { previous == null || previous.matches.getOrNull(it)?.searchIncomplete != false }.toSet()
             _state.update { it.copy(loading = true, processedQueries = 0, totalQueries = pendingIndices.size,
-                matches = previous?.matches.orEmpty(), selectedSongIds = previous?.selectedSongIds.orEmpty(), error = null, result = null) }
+                sourceTitle = sourceTitle, sourceTotalCount = sourceTotalCount, sourceReadCompleteness = sourceReadCompleteness,
+                queries = queries, overflowCount = overflowCount,
+                matches = previous?.matches ?: queries.map { query -> ImportedSongMatch(query, reason = "等待匹配", searchIncomplete = true) },
+                selectedSongIds = previous?.selectedSongIds.orEmpty(), error = null, result = null) }
+            persistDraft()
             val semaphore = Semaphore(4)
             val matches = coroutineScope {
                 queries.mapIndexed { index, query -> async {
@@ -543,9 +613,14 @@ class PlaylistImportViewModel(
                         resolveImportQuery(query).let { refreshed ->
                             val old = previous?.matches?.getOrNull(index)
                             if (old == null) refreshed else preserveRetriedImportChoice(old, refreshed, previous?.selectedSongIds.orEmpty())
-                        }.also {
+                        }.also { resolved ->
                             if (shouldApplyImportPreview(generation, previewGeneration)) {
-                                _state.update { current -> current.copy(processedQueries = current.processedQueries + 1) }
+                                _state.update { current -> current.copy(processedQueries = current.processedQueries + 1,
+                                    matches = current.matches.mapIndexed { matchIndex, match -> if (matchIndex == index) resolved else match },
+                                    selectedSongIds = if (resolved.selectedByDefault) current.selectedSongIds + resolved.song!!.id else current.selectedSongIds) }
+                                // Persist bounded checkpoints, retaining already matched songs if the
+                                // process ends during a large import without syncing on every row.
+                                if (_state.value.processedQueries % 8 == 0) persistDraft()
                             }
                         }
                     }
@@ -557,6 +632,7 @@ class PlaylistImportViewModel(
                     loading = false,
                     sourceTitle = sourceTitle,
                     sourceTotalCount = sourceTotalCount,
+                    sourceReadCompleteness = sourceReadCompleteness,
                     queries = queries,
                     matches = matches,
                     selectedSongIds = if (previous == null) defaultSelectedSongIds(matches) else
@@ -568,6 +644,7 @@ class PlaylistImportViewModel(
                 )
             }
             loadDestinations()
+            persistDraft()
         }
     }
 
@@ -626,7 +703,8 @@ class PlaylistImportViewModel(
     fun retrySearch() {
         val snapshot = _state.value
         if (snapshot.loading || snapshot.importing || snapshot.queries.isEmpty()) return
-        startResolution(snapshot.queries, snapshot.sourceTitle, snapshot.overflowCount, snapshot.sourceTotalCount, previous = snapshot)
+        startResolution(snapshot.queries, snapshot.sourceTitle, snapshot.overflowCount, snapshot.sourceTotalCount,
+            snapshot.sourceReadCompleteness, previous = snapshot)
     }
 
     private fun List<Song>.distinctImportSongs(): List<Song> = distinctBy { song ->
@@ -656,14 +734,18 @@ class PlaylistImportViewModel(
         return failure ?: AppResult.Failure(-1, "搜索失败")
     }
 
-    private fun loadDestinations() {
+    fun loadDestinations() {
+        if (_state.value.loadingDestinations) return
+        _state.update { it.copy(loadingDestinations = true, destinationError = null) }
         viewModelScope.launch {
+            val uid = playlists.currentUserId()
             when (val result = playlists.myPlaylists()) {
                 is AppResult.Success -> _state.update { state ->
-                    val uid = playlists.currentUserId()
-                    state.copy(destinationPlaylists = result.data.filter { uid > 0 && (it.userId == uid || it.creator?.userId == uid) })
+                    val sameOwner = playlists.currentUserId() == uid && (draftOwnerUserId == 0L || draftOwnerUserId == uid)
+                    state.copy(loadingDestinations = false, destinationPlaylists = if (sameOwner) result.data.filter { uid > 0 && (it.userId == uid || it.creator?.userId == uid) } else emptyList(),
+                        destinationError = if (sameOwner) null else "账号已变化，请重新打开导入页")
                 }
-                is AppResult.Failure -> Unit
+                is AppResult.Failure -> _state.update { it.copy(loadingDestinations = false, destinationError = "目标歌单读取失败：${result.message}") }
             }
         }
     }
@@ -676,31 +758,50 @@ class PlaylistImportViewModel(
             return
         }
         importJob = viewModelScope.launch {
+            val ownerUserId = playlists.currentUserId()
+            if (ownerUserId <= 0L) { _state.update { it.copy(error = "登录状态已变化，请重新导入") }; return@launch }
+            if (snapshot.selectedDestinationId == null && snapshot.creationUnconfirmed) {
+                _state.update { it.copy(error = "上次创建结果未确认，请选择已有歌单作为目标后继续") }
+                return@launch
+            }
+            draftActive = true
             _state.update { it.copy(importing = true, creatingDestination = snapshot.selectedDestinationId == null, error = null, result = null) }
             var writtenTarget: Long? = null
             try {
+                if (snapshot.selectedDestinationId == null && !persistDraft(ownerUserId)) return@launch
                 val target = snapshot.selectedDestinationId ?: when (val create = playlists.create(snapshot.newPlaylistName.trim().ifBlank { "导入的歌单" })) {
                     is AppResult.Success -> create.data.playlist?.id?.takeIf { it > 0L }
                     is AppResult.Failure -> null
                 }
                 if (target == null) {
-                    _state.update { it.copy(error = "创建结果未确认，请先刷新“我的歌单”检查是否已创建，再选择目标重试") }
+                    _state.update { it.copy(creationUnconfirmed = true, error = "创建结果未确认，请先刷新“我的歌单”检查是否已创建，再选择目标重试") }
+                    return@launch
+                }
+                if (playlists.currentUserId() != ownerUserId) {
+                    _state.update { it.copy(error = "登录状态已变化，未向目标歌单写入歌曲") }
                     return@launch
                 }
                 // Persist a just-created target before any batch write. A retry then
                 // continues in that list rather than creating a duplicate playlist.
                 _state.update { it.copy(selectedDestinationId = target, creatingDestination = false) }
+                if (!persistDraft(ownerUserId)) return@launch
                 writtenTarget = target
                 val report = when (val result = writePlaylistImport(snapshot.matches, snapshot.selectedSongIds,
                     readExisting = {
+                        if (playlists.currentUserId() != ownerUserId) return@writePlaylistImport AppResult.Failure(-1, "登录状态已变化，已停止写入")
                         playlists.membershipForImport(target)
                     },
                     writeBatch = { batch ->
-                        when (val response = playlists.addTracks(target, batch)) {
+                        if (playlists.currentUserId() != ownerUserId) return@writePlaylistImport AppResult.Failure(-1, "登录状态已变化，已停止写入")
+                        when (val response = playlists.addTracks(target, batch, ownerUserId)) {
                             is AppResult.Failure -> response
                             is AppResult.Success -> if (response.data.code == 200) AppResult.Success(Unit)
                                 else AppResult.Failure(response.data.code, "批次写入失败")
                         }
+                    },
+                    onBatchWritten = { batch ->
+                        completedSongIds += batch
+                        persistDraft(ownerUserId)
                     },
                 )) {
                     is AppResult.Success -> result.data
@@ -719,6 +820,14 @@ class PlaylistImportViewModel(
                     )
                 }
                 // Stay on the preview so a partial batch can be retried deliberately.
+                if (failed == 0) {
+                    draftMutex.withLock {
+                        draftActive = false
+                        withContext(Dispatchers.IO) { draftStore?.clear(ownerUserId) }
+                    }
+                } else persistDraft(ownerUserId)
+                // Navigation may dispose this ViewModel immediately. Clear the completed
+                // draft first, so reopening the importer cannot restore a finished task.
                 if (failed == 0 && added > 0) onSuccess(target)
             } catch (cancelled: CancellationException) {
                 throw cancelled

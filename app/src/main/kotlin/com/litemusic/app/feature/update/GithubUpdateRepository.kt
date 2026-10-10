@@ -69,6 +69,11 @@ class GithubUpdateRepository(
 
     fun installerUri(file: File) = FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
 
+    /** Re-check a persisted completed file before exposing it to the package installer. */
+    fun validateDownloadedUpdate(file: File, expectedVersionCode: Long): Boolean = runCatching {
+        checkArchive(file, expectedVersionCode)
+    }.isSuccess
+
     private suspend fun checkFromApi(installedVersionCode: Long): UpdateCheckResult? =
         client.newCall(Request.Builder().url(API_URL)
             .header("Accept", "application/vnd.github+json").header("User-Agent", USER_AGENT).build()).consumeCancellable { it, ensureActive ->

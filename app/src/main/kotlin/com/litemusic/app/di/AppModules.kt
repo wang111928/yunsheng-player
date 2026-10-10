@@ -19,6 +19,11 @@ import com.litemusic.app.feature.playlist.importing.PublicPlaylistReader
 import com.litemusic.app.feature.search.SearchViewModel
 import com.litemusic.app.feature.settings.SettingsViewModel
 import com.litemusic.app.feature.update.GithubUpdateRepository
+import com.litemusic.app.feature.update.UpdateDownloadCoordinator
+import com.litemusic.app.feature.playlist.importing.PlaylistImportDraftStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
 import com.litemusic.app.feature.signin.SigninViewModel
 import com.litemusic.app.feature.social.SocialViewModel
 import com.litemusic.app.feature.together.TogetherViewModel
@@ -64,6 +69,8 @@ val networkModule = module {
 
 val repositoriesModule = module {
     single { GithubUpdateRepository(androidContext(), get(named("githubUpdateClient"))) }
+    single { UpdateDownloadCoordinator(androidContext(), get(), CoroutineScope(SupervisorJob() + Dispatchers.IO)) }
+    single { PlaylistImportDraftStore(androidContext()) }
     single { AuthRepository(get(), get(), get()) }
     single { HomeRepository(get(), get(), get(), get(), get()) }
     single { SearchRepository(get(), get()) }

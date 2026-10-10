@@ -1,6 +1,7 @@
 package com.litemusic.player
 
 import android.content.Context
+import android.os.StatFs
 import androidx.media3.common.C
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
@@ -15,6 +16,52 @@ import com.litemusic.shared.player.QueueItem
 import com.litemusic.shared.util.Quality
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** Read-only summary for storage UI; completed and partial song IDs are disjoint. */
+data class AudioCacheUsage(
+    val bytes: Long = 0L,
+    val completeSongIds: Set<Long> = emptySet(),
+    val partialSongIds: Set<Long> = emptySet(),
+    val freeBytes: Long = 0L,
+)
+
+internal data class CachedAudioResource(
+    val key: String,
+    val cachedBytes: Long,
+    val complete: Boolean,
+)
+
+internal fun audioCacheUsageForResources(
+    resources: List<CachedAudioResource>,
+    freeBytes: Long,
+): AudioCacheUsage {
+    val streamResources = resources.filter { streamSongId(it.key) != null }
+    val complete = streamResources.asSequence()
+        .filter { it.complete }
+        .mapNotNull { streamSongId(it.key) }
+        .toSet()
+    val partial = streamResources.asSequence()
+        .filter { !it.complete && it.cachedBytes > 0L }
+        .mapNotNull { streamSongId(it.key) }
+        .filterNot { it in complete }
+        .toSet()
+    return AudioCacheUsage(
+        bytes = streamResources.sumOf { it.cachedBytes.coerceAtLeast(0L) },
+        completeSongIds = complete,
+        partialSongIds = partial,
+        freeBytes = freeBytes.coerceAtLeast(0L),
+    )
+}
+
+private fun streamSongId(cacheKey: String): Long? = cacheKey
+    .takeIf { it.startsWith("stream:") }
+    ?.split(':')
+    ?.takeIf { it.size == 3 }
+    ?.get(1)
+    ?.toLongOrNull()
+    ?.takeIf { it > 0L }
 
 internal const val STREAM_CACHE_PLACEHOLDER_ORIGIN = "https://cache.invalid/stream/"
 
@@ -24,7 +71,7 @@ internal const val STREAM_CACHE_PLACEHOLDER_ORIGIN = "https://cache.invalid/stre
  * Completed and partial stream bytes persist without a size cap or automatic eviction, so a
  * later offline selection can reuse every fully cached track.
  */
-internal class StreamAudioCache private constructor(context: Context) {
+internal class StreamAudioCache private constructor(private val context: Context) {
     private val cache = SimpleCache(
         StreamCacheStorage.resolveDirectory(context.noBackupFilesDir, context.cacheDir),
         NoOpCacheEvictor(),
@@ -69,6 +116,19 @@ internal class StreamAudioCache private constructor(context: Context) {
         return length != C.LENGTH_UNSET.toLong() && length > 0 && cache.isCached(cacheKey, 0, length)
     }
 
+    fun usage(): AudioCacheUsage {
+        val resources = cache.keys.map { key ->
+            val spans = cache.getCachedSpans(key)
+            CachedAudioResource(
+                key = key,
+                cachedBytes = spans.sumOf { it.length },
+                complete = isComplete(key),
+            )
+        }
+        val directory = StreamCacheStorage.resolveDirectory(context.noBackupFilesDir, context.cacheDir)
+        return audioCacheUsageForResources(resources, StatFs(directory.absolutePath).availableBytes)
+    }
+
     companion object {
         const val CACHE_DIRECTORY = "stream-audio-v1"
         private const val STREAM_FRAGMENT_BYTES = 2L * 1024L * 1024L
@@ -110,6 +170,11 @@ object OfflinePlaybackAvailability {
 
     fun canPlay(context: Context, item: QueueItem): Boolean {
         return playableCachedItem(context, item) != null
+    }
+
+    /** Cache metadata and filesystem statistics may touch disk; callers get an IO-safe API. */
+    suspend fun usage(context: Context): AudioCacheUsage = withContext(Dispatchers.IO) {
+        StreamAudioCacheStore.get(context).usage()
     }
 
     /**

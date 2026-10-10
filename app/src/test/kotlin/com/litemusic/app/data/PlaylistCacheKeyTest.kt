@@ -24,4 +24,15 @@ class PlaylistCacheKeyTest {
 
         assertEquals(playlistDetailCacheKey(77L, before), playlistDetailCacheKey(77L, after))
     }
+
+    @Test
+    fun offlinePlaylistCacheUsesStableAccountIdInsteadOfLoginCredential() {
+        val before = AuthStore.Session(userId = 1L, musicU = "old-cookie", loginAt = 10L)
+        val relogin = AuthStore.Session(userId = 1L, musicU = "new-cookie", loginAt = 20L)
+
+        assertEquals(
+            offlinePlaylistDetailCacheKey(77L, before.userId),
+            offlinePlaylistDetailCacheKey(77L, relogin.userId),
+        )
+    }
 }

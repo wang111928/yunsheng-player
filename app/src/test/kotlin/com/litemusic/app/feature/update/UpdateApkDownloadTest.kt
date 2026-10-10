@@ -115,6 +115,20 @@ class UpdateApkDownloadTest {
         }
     }
 
+    @Test fun resumeRequiresTheSameUrlAndAStableServerValidator() {
+        assertFalse(canResumeUpdateDownload("https://github.com/a.apk", "https://github.com/a.apk", null, null))
+        assertFalse(canResumeUpdateDownload("https://github.com/a.apk", "https://github.com/b.apk", "etag-a", null))
+        assertTrue(canResumeUpdateDownload("https://github.com/a.apk", "https://github.com/a.apk", "etag-a", null))
+        assertTrue(canResumeUpdateDownload("https://github.com/a.apk", "https://github.com/a.apk", null, "Wed, 21 Oct 2015 07:28:00 GMT"))
+    }
+
+    @Test fun classifiesUserFacingDownloadFailuresWithoutExposingRawExceptions() {
+        assertEquals("更新下载网络中断，请检查网络后重试", updateDownloadFailureMessage(java.io.IOException("offline")))
+        assertEquals("更新下载失败（HTTP 404）", updateDownloadFailureMessage(IllegalStateException("下载更新失败（HTTP 404）")))
+        assertEquals("更新文件校验失败，请重新下载", updateDownloadFailureMessage(IllegalStateException("下载文件不完整或校验失败")))
+        assertEquals("更新包签名与当前应用不一致", updateDownloadFailureMessage(IllegalStateException("更新包签名与当前应用不一致")))
+    }
+
     private fun body(text: String): ResponseBody = object : ResponseBody() {
         private val buffer = Buffer().writeUtf8(text)
         override fun contentLength(): Long = text.length.toLong()

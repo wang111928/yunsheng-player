@@ -43,6 +43,7 @@ import com.litemusic.app.feature.player.offlinePlayableQueue
 import com.litemusic.app.feature.player.offlineQueueStartIndex
 import com.litemusic.app.feature.player.offlineUnavailableLabel
 import com.litemusic.app.feature.player.rememberOfflineUnavailableIds
+import com.litemusic.app.feature.player.SongActionSheet
 import com.litemusic.app.util.NetworkStatusMonitor
 import com.litemusic.data.prefs.SettingsStore
 import com.litemusic.design.components.ErrorView
@@ -116,6 +117,10 @@ private fun ArtistContent(detail: ArtistDetailResponse, onPlay: (List<com.litemu
     val isOnline by network.isOnline.collectAsState()
     val cacheRevision by OfflinePlaybackAvailability.cacheRevision.collectAsState()
     val queueBuilder = remember { QueueBuilder() }
+    var actionSong by remember { mutableStateOf<com.litemusic.shared.model.Song?>(null) }
+    actionSong?.let { song ->
+        SongActionSheet(song = song, onDismiss = { actionSong = null })
+    }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { network.refresh() }
     val unavailableSongIds = rememberOfflineUnavailableIds(
         songs = detail.hotSongs,
@@ -173,6 +178,7 @@ private fun ArtistContent(detail: ArtistDetailResponse, onPlay: (List<com.litemu
                     enabled = queueIndex != null,
                     disabledReason = offlineUnavailableLabel(isOnline, unavailableSongIds, song.id),
                     onClick = { queueIndex?.let { onPlay(playableSongs, it) } },
+                    onMore = { actionSong = song },
                 )
             }
         } else {
