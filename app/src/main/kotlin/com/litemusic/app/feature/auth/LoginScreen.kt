@@ -36,10 +36,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
@@ -73,20 +73,20 @@ fun LoginScreen(viewModel: LoginViewModel = koinViewModel()) {
     var officialQrReload by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     var nativeEnabled by remember { mutableStateOf(qqNativeHandoffEnabled(context)) }
-    var loginRoute by remember { mutableStateOf(if (nativeEnabled) LoginWebAuthRoute.QQ_OAUTH else LoginWebAuthRoute.OFFICIAL_QR) }
+    var loginRoute by remember { mutableStateOf(LoginWebAuthRoute.QQ_OAUTH) }
     var showNativeHelp by remember { mutableStateOf(false) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         val allowed = qqNativeHandoffEnabled(context)
         if (allowed != nativeEnabled) {
             nativeEnabled = allowed
-            loginRoute = if (allowed) LoginWebAuthRoute.QQ_OAUTH else LoginWebAuthRoute.OFFICIAL_QR
+            loginRoute = LoginWebAuthRoute.QQ_OAUTH
             officialQrReload += 1
         }
     }
     if (showNativeHelp) AlertDialog(
         onDismissRequest = { showNativeHelp = false },
-        title = { Text("QQ 免截图授权") },
-        text = { Text("在系统的“打开链接”中，允许云声打开 ssl.ptlogin2.qq.com，然后返回本页，从官网的其他登录方式选择 QQ 并确认授权。只有开启此链接后才能尝试直接返回云声。手机号、邮箱和官网扫码仍可正常使用。") },
+        title = { Text("授权跳转设置") },
+        text = { Text("QQ 授权跳转需要在系统的“打开链接”中允许云声打开 ssl.ptlogin2.qq.com。设置后返回官网登录页，点击页面里的“QQ登录”，再点击“一键登录”。其他登录方式继续使用官网流程；云声不会替你同意授权。") },
         confirmButton = { TextButton(onClick = {
             showNativeHelp = false
             openAuthLinkSettings(context)
@@ -116,8 +116,8 @@ fun LoginScreen(viewModel: LoginViewModel = koinViewModel()) {
                         officialQrReload += 1
                     }, modifier = Modifier.fillMaxWidth()) { Text("官方扫码") }
                 }
-                TextButton(onClick = { if (nativeEnabled) { loginRoute = LoginWebAuthRoute.QQ_OAUTH; officialQrReload += 1 } else showNativeHelp = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
-                    Text(if (nativeEnabled) "使用 QQ 直接授权" else "启用 QQ 免截图授权")
+                TextButton(onClick = { showNativeHelp = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Text("授权跳转设置")
                 }
                 loginError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
             }
@@ -274,6 +274,7 @@ private fun WebView.configureLoginWebView(
     }
 
     webViewClient = loginWebViewClient(
+        baseUserAgent = userAgent,
         onCookies = onCookies,
         onPageLoadingChanged = onPageLoadingChanged,
         onPageError = onPageError,
@@ -288,12 +289,15 @@ private fun WebView.configureLoginWebView(
 }
 
 private fun loginWebViewClient(
+    baseUserAgent: String,
     onCookies: (Map<String, String>) -> Unit,
     onPageLoadingChanged: (Boolean) -> Unit,
     onPageError: (String) -> Unit,
     onRenderProcessGone: (WebView) -> Unit,
     openOtherLoginOptions: Boolean,
 ): WebViewClient = object : WebViewClient() {
+    private val restartedLoginRequests = linkedSetOf<String>()
+
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
         handleNavigation(view, request.url, request.isForMainFrame, "request")
 
@@ -315,26 +319,43 @@ private fun loginWebViewClient(
             onPageError("请用本页二维码或账号完成 QQ 登录")
             return true
         }
-        if (BuildConfig.AUTH_HANDOFF_EXPERIMENT && uri.scheme.equals("sinaweibo", true)) {
+        if (uri.scheme.equals("sinaweibo", true)) {
             if (!isTrustedWeiboLoginSource(view.url) || uri.host != "browser" ||
                 !uri.path.isNullOrEmpty() || uri.userInfo != null || uri.port != -1 ||
                 uri.getQueryParameter("url").isNullOrBlank()
             ) return true
+            if (!canOpenWeiboHandoff(view.context, url)) {
+                onPageError("未安装微博，已保留当前网页登录")
+                return true
+            }
             view.evaluateJavascript("window.nmlWeiboHandoffIssued = true", null)
-            if (weiboHandoffAttempts[view] == view.url) return true
-            weiboHandoffAttempts[view] = view.url.orEmpty()
+            val now = android.os.SystemClock.elapsedRealtime()
+            val previous = weiboHandoffAttempts[view]
+            if (previous != null && previous.first == view.url && now - previous.second in 0..1_500L) return true
+            weiboHandoffAttempts[view] = view.url.orEmpty() to now
             if (!openAuthHandoff(view, url)) {
+                weiboHandoffAttempts.remove(view)
                 val message = "未安装微博或无法打开授权，请使用当前页面的网页登录"
                 Toast.makeText(view.context, message, Toast.LENGTH_LONG).show()
             }
             return true
         }
         if (uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) {
+            // QQ's HTTPS jump can carry a one-use provider ticket. Neither a callback
+            // load nor a redirect through it may change UA and replay this request.
+            if (uri.scheme.equals("https", true) && uri.host.equals("ssl.ptlogin2.qq.com", true) &&
+                uri.path == "/jump" && uri.userInfo == null && uri.port == -1
+            ) return false
             val normalizedUrl = if (mainFrame) {
-                normalizedQqWebLoginUrl(url, allowNativeHandoff = qqNativeHandoffEnabled(view.context))
+                normalizedQqWebLoginUrl(url, allowNativeHandoff = nativeQqNavigationAllowed(view))
             } else url
             if (normalizedUrl != url) {
+                setNavigationUserAgent(view, normalizedUrl, baseUserAgent)
                 view.loadUrl(normalizedUrl)
+                return true
+            }
+            if (mainFrame && setNavigationUserAgent(view, url, baseUserAgent)) {
+                view.loadUrl(url)
                 return true
             }
             return false
@@ -363,6 +384,18 @@ private fun loginWebViewClient(
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+        // The first navigation of a window.open popup may skip shouldOverrideUrlLoading.
+        // Select the provider mode before its page can build an embedded desktop login UI.
+        val normalizedUrl = normalizedQqWebLoginUrl(url, allowNativeHandoff = nativeQqNavigationAllowed(view))
+        val desiredUserAgent = loginNavigationUserAgent(baseUserAgent, normalizedUrl, nativeQqNavigationAllowed(view))
+        if (shouldReloadLoginPageAtStart(baseUserAgent, view.settings.userAgentString, url, nativeQqNavigationAllowed(view))) {
+            if (restartedLoginRequests.size >= 4) restartedLoginRequests.remove(restartedLoginRequests.first())
+            restartedLoginRequests.add(url)
+            view.stopLoading()
+            view.settings.userAgentString = desiredUserAgent
+            view.loadUrl(normalizedUrl)
+            return
+        }
         super.onPageStarted(view, url, favicon)
         weiboHandoffAttempts.remove(view)
         onPageLoadingChanged(true)
@@ -374,7 +407,7 @@ private fun loginWebViewClient(
         onPageLoadingChanged(false)
         view.checkLoginCookies(onCookies)
         val uri = android.net.Uri.parse(url)
-        if (BuildConfig.AUTH_HANDOFF_EXPERIMENT && isTrustedWeiboLoginSource(url)) {
+        if (isTrustedWeiboLoginSource(url) && canOpenWeiboHandoff(view.context, "sinaweibo://browser?url=https%3A%2F%2Fapi.weibo.com")) {
             val script = view.context.assets.open("weibo_handoff_probe.js").bufferedReader().use { it.readText() }
             view.evaluateJavascript(script, null)
         }
@@ -398,6 +431,12 @@ private fun loginWebViewClient(
 
     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
         super.onReceivedError(view, request, error)
+        // A mode restart may report its deliberate stop after the replacement has started.
+        // Ignore only that exact request's abort; real network errors still surface normally.
+        if (request.isForMainFrame && error.errorCode == ERROR_UNKNOWN &&
+            error.description.toString().contains("ERR_ABORTED") &&
+            restartedLoginRequests.remove(request.url.toString())
+        ) return
         if (request.isForMainFrame) {
             onPageLoadingChanged(false)
             onPageError("登录页加载失败：${error.description}")
@@ -430,8 +469,7 @@ private class LoginWebChromeClient(
         val popup = WebView(view.context)
         val lifecycleScript = popup.configureLoginWebView(
             userAgent = popupLoginUserAgent(
-                view.settings.userAgentString ?: OFFICIAL_QR_USER_AGENT,
-                authHandoffExperiment = qqNativeHandoffEnabled(view.context),
+                OFFICIAL_QR_USER_AGENT,
             ),
             openOtherLoginOptions = false,
             onCookies = onCookies,
@@ -501,7 +539,7 @@ private class LoginWebChromeClient(
 }
 
 private val qqLifecycleScriptHandlers = WeakHashMap<WebView, androidx.webkit.ScriptHandler>()
-private val weiboHandoffAttempts = WeakHashMap<WebView, String>()
+private val weiboHandoffAttempts = WeakHashMap<WebView, Pair<String, Long>>()
 
 private fun WebView.releaseLoginWebView() {
     weiboHandoffAttempts.remove(this)
@@ -529,6 +567,21 @@ private fun tryQqHandoff(view: WebView, providerUri: String, onError: (String) -
     }
 }
 
+/** Reload once only when a main-frame QQ navigation needs a different trusted UA. */
+private fun setNavigationUserAgent(view: WebView, targetUrl: String, baseUserAgent: String): Boolean {
+    val desired = loginNavigationUserAgent(
+        baseUserAgent = baseUserAgent,
+        targetUrl = targetUrl,
+        nativeAllowed = nativeQqNavigationAllowed(view),
+    )
+    if (view.settings.userAgentString == desired) return false
+    view.settings.userAgentString = desired
+    return true
+}
+
+private fun nativeQqNavigationAllowed(view: WebView): Boolean =
+    qqNativeHandoffEnabled(view.context) && QqNativeHandoffBridge.isInstalled(view)
+
 private fun openAuthHandoff(view: WebView, handoffUrl: String): Boolean = try {
     val intent = (if (handoffUrl.startsWith("intent:", ignoreCase = true)) {
         Intent.parseUri(handoffUrl, Intent.URI_INTENT_SCHEME)
@@ -538,6 +591,7 @@ private fun openAuthHandoff(view: WebView, handoffUrl: String): Boolean = try {
         selector = null
         removeExtra("browser_fallback_url")
         if (isExactQqNativeHandoffRequest(handoffUrl)) setPackage("com.tencent.mobileqq")
+        if (android.net.Uri.parse(handoffUrl).scheme.equals("sinaweibo", true)) setPackage("com.sina.weibo")
     }
     view.context.startActivity(intent)
     true
@@ -559,6 +613,14 @@ private fun isTrustedWeiboLoginSource(url: String?): Boolean {
     return uri.scheme == "https" && uri.host == "api.weibo.com" &&
         uri.path == "/oauth2/authorize" && uri.userInfo == null && uri.port == -1
 }
+
+private fun canOpenWeiboHandoff(context: android.content.Context, handoffUrl: String): Boolean = runCatching {
+    Intent(Intent.ACTION_VIEW, android.net.Uri.parse(handoffUrl)).apply {
+        addCategory(Intent.CATEGORY_BROWSABLE)
+        component = null
+        selector = null
+    }.resolveActivity(context.packageManager)?.packageName == "com.sina.weibo"
+}.getOrDefault(false)
 
 private fun WebView.checkLoginCookies(onCookies: (Map<String, String>) -> Unit) {
     val cookies = musicLoginCookies(CookieManager.getInstance().getCookie("https://music.163.com"))

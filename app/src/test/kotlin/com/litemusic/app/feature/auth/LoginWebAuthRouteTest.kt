@@ -58,9 +58,120 @@ class LoginWebAuthRouteTest {
         assertEquals(OFFICIAL_QR_USER_AGENT, popupLoginUserAgent(OFFICIAL_QR_USER_AGENT))
     }
 
-    @Test fun authHandoffProbeUsesAMobileUserAgentOnlyForItsPopup() {
-        assertEquals(OFFICIAL_QR_USER_AGENT, popupLoginUserAgent(OFFICIAL_QR_USER_AGENT, authHandoffExperiment = false))
-        assertTrue(popupLoginUserAgent(OFFICIAL_QR_USER_AGENT, authHandoffExperiment = true).contains("Android"))
+    @Test fun providerPopupKeepsTheOfficialDesktopUserAgentByDefault() {
+        assertEquals(OFFICIAL_QR_USER_AGENT, popupLoginUserAgent(OFFICIAL_QR_USER_AGENT))
+    }
+
+    @Test fun navigationUsesMobileUaOnlyForTheTrustedQqLoginUiWhenNativeIsAllowed() {
+        val qqUi = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=100495085"
+
+        assertTrue(loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, qqUi, nativeAllowed = true).contains("Android"))
+        assertEquals(OFFICIAL_QR_USER_AGENT, loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, qqUi, nativeAllowed = false))
+    }
+
+    @Test fun nativeNavigationUsesMobileUaForTheExactTopLevelQqAuthorizationPage() {
+        val qrPage = "https://graph.qq.com/oauth2.0/show?which=Login&display=pc"
+        val authorizePage = "https://graph.qq.com/oauth2.0/authorize?client_id=100495085"
+
+        assertTrue(loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, qrPage, nativeAllowed = true).contains("Android"))
+        assertTrue(loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, authorizePage, nativeAllowed = true).contains("Android"))
+        assertEquals(
+            OFFICIAL_QR_USER_AGENT,
+            loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, qrPage, nativeAllowed = false),
+        )
+    }
+
+    @Test fun qqProviderUiTrustRequiresTheExactHttpsHostsAndLoginPaths() {
+        assertTrue(isQqProviderUiUrl("https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=1"))
+        assertTrue(isQqProviderUiUrl("https://ui.ptlogin2.qq.com/cgi-bin/xlogin?appid=1"))
+
+        assertFalse(isQqProviderUiUrl("http://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=1"))
+        assertFalse(isQqProviderUiUrl("https://ptlogin2.qq.com/cgi-bin/xlogin?appid=1"))
+        assertFalse(isQqProviderUiUrl("https://ssl.ptlogin2.qq.com/cgi-bin/xlogin?appid=1"))
+        assertFalse(isQqProviderUiUrl("https://ui.ptlogin2.qq.com/login?appid=1"))
+        assertFalse(isQqProviderUiUrl("https://xui.ptlogin2.qq.com/other?appid=1"))
+        assertFalse(isQqProviderUiUrl("https://user@xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=1"))
+        assertFalse(isQqProviderUiUrl("https://xui.ptlogin2.qq.com:8443/cgi-bin/xlogin?appid=1"))
+    }
+
+    @Test fun navigationRestoresDesktopUaOutsideTheTrustedQqLoginUi() {
+        assertEquals(
+            OFFICIAL_QR_USER_AGENT,
+            loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, "https://music.163.com/#/login", nativeAllowed = true),
+        )
+        assertEquals(
+            OFFICIAL_QR_USER_AGENT,
+            loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, "https://xui.ptlogin2.qq.com.evil.example/cgi-bin/xlogin", nativeAllowed = true),
+        )
+        assertEquals(
+            OFFICIAL_QR_USER_AGENT,
+            loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, "https://open.weixin.qq.com/connect/oauth2/authorize", nativeAllowed = true),
+        )
+        assertEquals(
+            OFFICIAL_QR_USER_AGENT,
+            loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, "https://graph.qq.com/oauth2.0/token", nativeAllowed = true),
+        )
+        assertEquals(
+            OFFICIAL_QR_USER_AGENT,
+            loginNavigationUserAgent(OFFICIAL_QR_USER_AGENT, "https://evil.graph.qq.com/oauth2.0/show", nativeAllowed = true),
+        )
+    }
+
+    @Test fun pageStartNeverReloadsProviderOrMusicCallbacks() {
+        assertFalse(
+            shouldReloadLoginPageAtStart(
+                baseUserAgent = OFFICIAL_QR_USER_AGENT,
+                currentUserAgent = AUTH_HANDOFF_MOBILE_USER_AGENT,
+                targetUrl = "https://ssl.ptlogin2.qq.com/jump?sig=signed",
+                nativeAllowed = true,
+            ),
+        )
+        assertFalse(
+            shouldReloadLoginPageAtStart(
+                baseUserAgent = OFFICIAL_QR_USER_AGENT,
+                currentUserAgent = AUTH_HANDOFF_MOBILE_USER_AGENT,
+                targetUrl = "https://music.163.com/api/login/qrcode/client/login?code=callback",
+                nativeAllowed = true,
+            ),
+        )
+        assertFalse(
+            shouldReloadLoginPageAtStart(
+                baseUserAgent = OFFICIAL_QR_USER_AGENT,
+                currentUserAgent = AUTH_HANDOFF_MOBILE_USER_AGENT,
+                targetUrl = "https://open.weixin.qq.com/connect/oauth2/authorize?code=callback",
+                nativeAllowed = true,
+            ),
+        )
+    }
+
+    @Test fun pageStartReloadsOnlyWhenAnInitialQqPageNeedsItsModeOrWebOnlyHint() {
+        val graphAuthorization = "https://graph.qq.com/oauth2.0/show?which=Login"
+        val unbridgedQqLogin = "https://ssl.ptlogin2.qq.com/cgi-bin/xlogin?appid=1"
+
+        assertTrue(
+            shouldReloadLoginPageAtStart(
+                baseUserAgent = OFFICIAL_QR_USER_AGENT,
+                currentUserAgent = OFFICIAL_QR_USER_AGENT,
+                targetUrl = graphAuthorization,
+                nativeAllowed = true,
+            ),
+        )
+        assertFalse(
+            shouldReloadLoginPageAtStart(
+                baseUserAgent = OFFICIAL_QR_USER_AGENT,
+                currentUserAgent = AUTH_HANDOFF_MOBILE_USER_AGENT,
+                targetUrl = graphAuthorization,
+                nativeAllowed = true,
+            ),
+        )
+        assertTrue(
+            shouldReloadLoginPageAtStart(
+                baseUserAgent = OFFICIAL_QR_USER_AGENT,
+                currentUserAgent = OFFICIAL_QR_USER_AGENT,
+                targetUrl = unbridgedQqLogin,
+                nativeAllowed = true,
+            ),
+        )
     }
 
     @Test fun authHandoffProbePreservesTheProviderGeneratedQqPayloadByteForByte() {

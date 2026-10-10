@@ -13,6 +13,7 @@
         android:maxSdkVersion="32" />
 
     <queries>
+        <package android:name="com.sina.weibo" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.APP_BROWSER" />

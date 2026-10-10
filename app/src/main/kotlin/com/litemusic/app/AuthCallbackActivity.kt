@@ -16,7 +16,7 @@ class AuthCallbackActivity : Activity() {
         val uri = received?.data
         val httpsJump = received?.action == Intent.ACTION_VIEW &&
             uri?.scheme == "https" && uri.host == "ssl.ptlogin2.qq.com" && uri.path == "/jump"
-        val accepted = httpsJump && AuthHandoffBridge.captureHttpsReturn(received)
+        val accepted = httpsJump && AuthHandoffBridge.captureHttpsReturn(received, this)
         if (accepted) {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)

@@ -20,7 +20,8 @@ internal object QqHttpsReturnMatcher {
         val originalJump = outerQuery["p"].takeUnless { it.isNullOrBlank() } ?: return false
         val original = strictJump(originalJump) ?: return false
         val candidate = strictJump(candidateReturn) ?: return false
-        if (original["openlogin_data"].isNullOrBlank()) return false
+        val originalBinding = openLoginBinding(original) ?: return false
+        if (openLoginBinding(candidate) != originalBinding) return false
         if (!candidate.keys.containsAll(original.keys)) return false
         if (original.any { (key, value) -> candidate[key] != value }) return false
         val additions = candidate.keys - original.keys
@@ -46,9 +47,22 @@ internal object QqHttpsReturnMatcher {
         if (value.length > MAX_URL_LENGTH) return null
         val uri = URI(value)
         if (!uri.scheme.equals("https", true) || uri.userInfo != null || uri.port != -1 || uri.rawFragment != null) return null
-        val connectRoot = uri.host.equals("connect.qq.com", true) && uri.path == "/" && uri.rawQuery.isNullOrEmpty()
+        val connectRoot = uri.host.equals("connect.qq.com", true) &&
+            (uri.path.isEmpty() || uri.path == "/") && uri.rawQuery.isNullOrEmpty()
         val graphAuthorize = uri.host.equals("graph.qq.com", true) && uri.path == "/oauth2.0/authorize"
         return uri.takeIf { connectRoot || graphAuthorize }
+    }
+
+    /**
+     * Accepts the observed `pt_` binding and the previously supported key. Conflicting
+     * bindings are ambiguous and must never be trusted.
+     */
+    private fun openLoginBinding(query: Map<String, String>): String? {
+        val providerBinding = query["pt_openlogin_data"]
+        val legacyBinding = query["openlogin_data"]
+        if (providerBinding.isNullOrBlank() && legacyBinding.isNullOrBlank()) return null
+        if (providerBinding != null && legacyBinding != null && providerBinding != legacyBinding) return null
+        return providerBinding ?: legacyBinding
     }
 
     private fun uniqueQuery(rawQuery: String?): Map<String, String>? {

@@ -31,7 +31,7 @@
     function report(uri) {
         if (!isExactQqRequest(uri)) return false;
         // Once handed to Android, swallow the provider's duplicate iframe/location path too.
-        // Letting it use its browser callback would race the app's nonce-bound callback.
+        // Letting it launch independently would race the same session's HTTPS return.
         if (issued) return true;
         if (Date.now() > armedUntil) return false;
         var bridge = window.nmlAuthHandoff;

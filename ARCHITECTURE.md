@@ -49,11 +49,11 @@ graph TD
 
 ## 设备包配置
 
-当前发布附件是 `0.2.41` Full Debug arm64-v8a APK：
+当前 `0.2.42` 分发附件是 Full Debug arm64-v8a APK：
 
 - application id：`com.litemusic.app.full.debug`
 - `minSdk`：28；`compileSdk` / `targetSdk`：36
-- 版本代码：241；版本名称：0.2.41
+- 版本代码：242；版本名称：0.2.42
 - ABI：arm64-v8a
 - 使用 Android debug 签名，仅供测试分发
 
@@ -73,7 +73,15 @@ graph TD
 
 更新检查以 versionCode 为准，过滤预发布及不匹配附件，禁止降级。安装前核对包名、版本码和签名；APK 命名约定为 `Yunsheng-full-v版本-vc版本号-arm64-v8a.apk`，Release 标签沿用 `v版本`。
 
-## 0.2.41 功能入口
+## 授权返回与账号验证
+
+`app/feature/auth` 保留第三方官网登录页面及其 Cookie 会话。QQ 授权返回只接受受限的 HTTPS 返回入口，并绑定到发起该授权的内存会话：会话有效期为 5 分钟，匹配的返回只能消费一次。返回本身不表示登录成功，应用仍使用原页面的 Cookie 会话调用官方账号接口验证登录结果。Android 需要由用户允许云声处理 `ssl.ptlogin2.qq.com` 链接；其余账号方式继续使用官网网页流程，不能据此推断均支持自动回跳。
+
+## 0.2.42 功能入口
+
+- `app/feature/auth`：QQ 官方页面授权、受限 HTTPS 返回入口、同会话 5 分钟绑定与一次消费；最终账号状态仍由官方账号接口验证。
+
+0.2.41 的以下功能继续保留：
 
 - `app/feature/player/SleepTimerSheet.kt`：小时／分钟吸附滚轮、同排快捷设置及倒计时卡片；`SleepTimerUiPolicy.kt` 负责显示换算，`player-core/SleepTimerController.kt` 负责播放服务定时策略。
 - `player-core/StreamAudioCache.kt`：缓存完整性与音频占用统计；`data-core` 的离线歌单存储为断网目录提供持久记录。

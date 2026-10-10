@@ -3,9 +3,9 @@ package com.litemusic.app.feature.auth
 import java.net.URI
 
 /**
- * Keeps QQ authorization in the same WebView as the music site.  QQ's mobile one-key
- * protocol cannot return an authenticated music session to this app, while the desktop
- * QQ page can complete the normal music.163.com cookie callback in-place.
+ * Starts authorization in the official music site's WebView. QQ's native handoff is
+ * enabled only when Android link handling and the trusted document bridge are available;
+ * otherwise the provider's web flow stays in the same cookie session.
  */
 internal enum class LoginWebAuthRoute {
     OFFICIAL_QR,
@@ -58,9 +58,9 @@ internal fun isQqProviderUiUrl(url: String): Boolean {
     val uri = runCatching { URI(url) }.getOrNull() ?: return false
     val host = uri.host?.lowercase() ?: return false
     return uri.scheme.equals("https", ignoreCase = true) &&
-        (host == "ptlogin2.qq.com" || host.endsWith(".ptlogin2.qq.com")) &&
+        (host == "xui.ptlogin2.qq.com" || host == "ui.ptlogin2.qq.com") &&
         uri.userInfo == null && uri.port == -1 &&
-        uri.path in setOf("/cgi-bin/xlogin", "/login")
+        uri.path == "/cgi-bin/xlogin"
 }
 
 /** Do not leave the embedded login session for QQ's native one-key protocol. */
@@ -74,9 +74,46 @@ internal fun keepLoginNavigationInWebView(url: String, allowNativeHandoff: Boole
         intentFragment.split(';').any { it.equals("scheme=wtloginmqq", ignoreCase = true) }
 }
 
-/** A child login window must identify itself exactly as its parent page does. */
-internal fun popupLoginUserAgent(parentUserAgent: String, authHandoffExperiment: Boolean = false): String =
-    if (authHandoffExperiment) AUTH_HANDOFF_MOBILE_USER_AGENT else parentUserAgent
+/** A provider popup always inherits the desktop UA to avoid changing other official providers. */
+internal fun popupLoginUserAgent(parentUserAgent: String): String = parentUserAgent
+
+/**
+ * Chooses mobile UA only for QQ's exact authorization entries and login UI. Loading the
+ * graph entry in mobile mode lets QQ navigate to the top-level xlogin document with its bridge.
+ */
+internal fun loginNavigationUserAgent(
+    baseUserAgent: String,
+    targetUrl: String,
+    nativeAllowed: Boolean,
+): String = if (nativeAllowed && (isQqProviderUiUrl(targetUrl) || isQqTopLevelAuthorizationUrl(targetUrl))) {
+    AUTH_HANDOFF_MOBILE_USER_AGENT
+} else {
+    baseUserAgent
+}
+
+internal fun shouldReloadLoginPageAtStart(
+    baseUserAgent: String,
+    currentUserAgent: String,
+    targetUrl: String,
+    nativeAllowed: Boolean,
+): Boolean {
+    // A non-bridge QQ page still needs the documented web-only hint. The normalizer leaves
+    // signed /jump callbacks untouched, so they can never enter this branch.
+    if (normalizedQqWebLoginUrl(targetUrl, nativeAllowed) != targetUrl) return true
+
+    val isInitialNativePage = isQqProviderUiUrl(targetUrl) || isQqTopLevelAuthorizationUrl(targetUrl)
+    if (!isInitialNativePage) return false
+
+    return currentUserAgent != loginNavigationUserAgent(baseUserAgent, targetUrl, nativeAllowed)
+}
+
+private fun isQqTopLevelAuthorizationUrl(url: String): Boolean {
+    val uri = runCatching { URI(url) }.getOrNull() ?: return false
+    return uri.scheme.equals("https", ignoreCase = true) &&
+        uri.host.equals("graph.qq.com", ignoreCase = true) &&
+        uri.userInfo == null && uri.port == -1 &&
+        uri.path in setOf("/oauth2.0/show", "/oauth2.0/authorize")
+}
 
 internal const val AUTH_HANDOFF_MOBILE_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 " +

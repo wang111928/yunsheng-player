@@ -11,37 +11,32 @@ class AuthHandoffCoordinatorTest {
     private var now = 1_000L
     private val coordinator = AuthHandoffCoordinator(
         nowMillis = { now },
-        nonceFactory = { "test-nonce" },
     )
 
-    @Test fun preservesQqPayloadAndAddsOnlyTheOuterCallbackParameter() {
-        val original = "wtloginmqq://ptlogin/qlogin?p=https%3A%2F%2Fssl.ptlogin2.qq.com%2Fjump%3Fu1%3Dopaque%2526state"
+    @Test fun removesBrowserCallbackPrefixesWithoutChangingQqPayloadOrOtherFields() {
+        val original = "wtloginmqq://ptlogin/qlogin?p=https%3A%2F%2Fssl.ptlogin2.qq.com%2Fjump%3Fu1%3Dopaque%2526state&foo=first&schemacallback=chrome%3A%2F%2Fcallback&foo=second&schemacallback=old"
 
         val handoff = coordinator.begin("com.example.authprobe", original)?.handoffUrl
 
-        assertNotNull(handoff)
-        assertTrue(handoff!!.startsWith("$original&schemacallback="))
-        assertTrue(handoff.contains("com.example.authprobe.auth%3A%2F%2Fauth%2Fqq%3Fnonce%3Dtest-nonce%26url%3D"))
+        assertEquals(
+            "wtloginmqq://ptlogin/qlogin?p=https%3A%2F%2Fssl.ptlogin2.qq.com%2Fjump%3Fu1%3Dopaque%2526state&foo=first&foo=second",
+            handoff,
+        )
     }
 
-    @Test fun onlyAcceptsTheExactLiveCallbackOnceBeforeExpiry() {
+    @Test fun doesNotTreatAnApplicationSchemeAsAProviderReturn() {
         coordinator.begin("com.example.authprobe", "wtloginmqq://ptlogin/qlogin?p=opaque")
 
-        assertNull(coordinator.capture("com.example.authprobe.auth://auth/not-qq?nonce=test-nonce"))
-        assertNull(coordinator.capture("com.example.authprobe.auth://auth/qq?nonce=wrong"))
-        assertNull(coordinator.capture("com.example.authprobe.auth://auth/qq?nonce=test-nonce&nonce=test-nonce"))
-        val capture = coordinator.capture("com.example.authprobe.auth://auth/qq?nonce=test-nonce&url=https%3A%2F%2Fssl.ptlogin2.qq.com%2Fjump")
-        assertNotNull(capture)
-        assertEquals(setOf("nonce", "url"), capture!!.queryKeys)
-        assertTrue(capture.hasUrlParameter)
-        assertNull(coordinator.capture("com.example.authprobe.auth://auth/qq?nonce=test-nonce"))
+        assertNull(coordinator.capture("com.example.authprobe.auth://auth/qq?nonce=test-nonce&url=https%3A%2F%2Fssl.ptlogin2.qq.com%2Fjump"))
+        assertTrue(coordinator.hasPending())
     }
 
     @Test fun expiresThePendingHandoffInsteadOfAcceptingALateCallback() {
-        coordinator.begin("com.example.authprobe", "wtloginmqq://ptlogin/qlogin?p=opaque")
+        val jump = "https://ssl.ptlogin2.qq.com/jump?u1=https%3A%2F%2Fconnect.qq.com%2F&openlogin_data=opaque-session"
+        coordinator.begin("com.example.authprobe", "wtloginmqq://ptlogin/qlogin?p=" + java.net.URLEncoder.encode(jump, java.nio.charset.StandardCharsets.UTF_8))
         now += AUTH_HANDOFF_TTL_MILLIS + 1
 
-        assertNull(coordinator.capture("com.example.authprobe.auth://auth/qq?nonce=test-nonce"))
+        assertNull(coordinator.captureHttpsReturn(jump))
         assertFalse(coordinator.hasPending())
     }
 
@@ -53,6 +48,28 @@ class AuthHandoffCoordinatorTest {
 
         assertTrue(duplicate!!.duplicate)
         assertNull(duplicate.handoffUrl)
+    }
+
+    @Test fun sameProviderRequestCanRetryAfterTheShortGestureDeduplicationWindow() {
+        val request = "wtloginmqq://ptlogin/qlogin?p=opaque"
+        coordinator.begin("com.example.authprobe", request)
+        now += 2_000L
+
+        val retry = coordinator.begin("com.example.authprobe", request)
+
+        assertFalse(retry!!.duplicate)
+        assertEquals(request, retry.handoffUrl)
+    }
+
+    @Test fun cancellingAnUnfinishedHandoffAllowsAnImmediateRetry() {
+        val request = "wtloginmqq://ptlogin/qlogin?p=opaque"
+        coordinator.begin("com.example.authprobe", request)
+        coordinator.cancel()
+
+        val retry = coordinator.begin("com.example.authprobe", request)
+
+        assertFalse(retry!!.duplicate)
+        assertEquals(request, retry.handoffUrl)
     }
 
     @Test fun httpsReturnRequiresMatchingLiveRequestAndConsumesItOnce() {

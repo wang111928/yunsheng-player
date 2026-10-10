@@ -8,8 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-val nmlVersionCode = 241
-val nmlVersionName = "0.2.41"
+val nmlVersionCode = 242
+val nmlVersionName = "0.2.42"
 // Explicitly opt in to the isolated authorization experiment. Stable installs keep their identity.
 val authHandoffExperiment = providers.gradleProperty("nmlAuthHandoffExperiment")
     .map { it.toBooleanStrict() }.getOrElse(false)

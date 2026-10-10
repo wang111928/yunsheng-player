@@ -64,5 +64,58 @@ class QqHttpsReturnMatcherTest {
         assertTrue(QqHttpsReturnMatcher.matches(providerRequest, candidate))
     }
 
+    @Test fun acceptsTheObservedAnonymousQqReturnShapeWithoutChangingItsOriginalFields() {
+        val connectOriginWithoutTrailingSlash = "https://connect.qq.com"
+        val observedJump = "https://ssl.ptlogin2.qq.com/jump?" +
+            "u1=${encode(connectOriginWithoutTrailingSlash)}&" +
+            "pt_report=opaque-report&pt_aid=opaque-aid&daid=opaque-daid&style=opaque-style&" +
+            "pt_ua=opaque-ua&pt_browser=opaque-browser&pt_3rd_aid=opaque-third-aid&" +
+            "pt_openlogin_data=opaque-binding"
+        val observedRequest = "wtloginmqq://ptlogin/qlogin?p=${encode(observedJump)}"
+        val observedReturn = "https://ssl.ptlogin2.qq.com/jump?" +
+            "keyindex=opaque-index&clientuin=opaque-uin&clientkey=opaque-key&" +
+            observedJump.substringAfter('?')
+
+        assertTrue(QqHttpsReturnMatcher.matches(observedRequest, observedReturn))
+    }
+
+    @Test fun rejectsObservedReturnWhenBindingOrNestedOriginChangesOrBindingIsBlank() {
+        val connectOriginWithoutTrailingSlash = "https://connect.qq.com"
+        val observedJump = "https://ssl.ptlogin2.qq.com/jump?" +
+            "u1=${encode(connectOriginWithoutTrailingSlash)}&pt_report=opaque-report&" +
+            "pt_openlogin_data=opaque-binding"
+        val observedRequest = "wtloginmqq://ptlogin/qlogin?p=${encode(observedJump)}"
+        val observedReturn = "https://ssl.ptlogin2.qq.com/jump?" +
+            "keyindex=opaque-index&clientuin=opaque-uin&clientkey=opaque-key&" +
+            observedJump.substringAfter('?')
+
+        assertFalse(
+            QqHttpsReturnMatcher.matches(
+                observedRequest,
+                observedReturn.replace("pt_openlogin_data=opaque-binding", "pt_openlogin_data=other-binding"),
+            ),
+        )
+        assertFalse(
+            QqHttpsReturnMatcher.matches(
+                observedRequest,
+                observedReturn.replace(encode(connectOriginWithoutTrailingSlash), encode("https://connect.qq.com/other")),
+            ),
+        )
+        assertFalse(
+            QqHttpsReturnMatcher.matches(
+                observedRequest,
+                observedReturn.replace("pt_openlogin_data=opaque-binding", "pt_openlogin_data="),
+            ),
+        )
+    }
+
+    @Test fun rejectsAmbiguousReturnsWithConflictingLegacyAndProviderBindings() {
+        val jumpWithBothBindings = "$jump&pt_openlogin_data=other-binding"
+        val requestWithBothBindings = "wtloginmqq://ptlogin/qlogin?p=${encode(jumpWithBothBindings)}"
+        val returnWithBothBindings = "$jumpWithBothBindings&keyindex=1&clientuin=opaque-user&clientkey=opaque-key"
+
+        assertFalse(QqHttpsReturnMatcher.matches(requestWithBothBindings, returnWithBothBindings))
+    }
+
     private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
 }
